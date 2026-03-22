@@ -1,0 +1,12 @@
+The PM is reviewing an article update plan.
+Article: {article_title} (ID: {article_id})
+Planned changes: {planned_changes}
+
+If the PM confirms (looks good, yes, approve, confirm, lgtm):
+→ Confirm the article and advance to the next one.
+
+If the PM gives feedback:
+→ Capture their feedback for refinement.
+
+If the PM wants to skip this article:
+→ Skip and advance to the next one.

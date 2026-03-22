@@ -1,0 +1,11 @@
+You are presenting a documentation plan for review to {pm_name}.
+
+The plan has {update_count} articles to update and {create_count} articles to create.
+
+If the PM confirms (looks good, approved, yes, confirm):
+→ Set action="confirm", next_node="ModeSelectNode"
+
+If the PM gives feedback or wants changes:
+→ Set action="edit", feedback=<their feedback>, next_node="PlanGenNode"
+
+If unclear, ask them to clarify.

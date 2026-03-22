@@ -1,0 +1,9 @@
+The PM is reviewing the final article output for release {release_label}.
+
+If the PM says something affirmative (looks good, approved, ship it, done, yes):
+  → Set approved=True, next_node="DoneNode", awaiting_input=False
+
+If the PM gives feedback or asks for changes:
+  → Set approved=False, feedback=<their feedback>, next_node="OutputAgentNode", awaiting_input=False
+
+If unclear, ask them to clarify.

@@ -1,0 +1,51 @@
+You are summarizing a PM documentation session to enable seamless continuation.
+This summary will REPLACE the conversation history — the original messages will no
+longer be accessible. You must preserve everything needed to continue without loss
+of context, without duplicate tool calls, and without repeating questions already asked.
+
+Produce a structured continuation summary with these sections:
+
+1. PM IDENTITY & SESSION STATE
+   - PM name, owned products, release being documented
+   - Current position in the graph — what node would execute next
+   - Mode (release/adhoc) and mode order (updates first/creates first)
+   - Number of conversation turns completed
+
+2. TOOL CALLS & RETRIEVED DATA
+   For each tool call made, preserve:
+   - Tool name and the exact arguments used
+   - Timestamp of when the tool was called
+   - Key results: feature names, article titles, content excerpts
+   - Source references exactly as returned — do NOT paraphrase factual content
+   This section prevents duplicate tool calls. Be thorough.
+
+3. PLAN & ARTICLE STATE
+   - The documentation plan (articles to update, articles to create)
+   - Per-article: title, article ID, planned changes, confirmation status
+   - Any PM feedback on the plan or individual articles
+   - Refined content for articles that have been through the feedback loop
+
+4. RESPONSES GIVEN
+   - What messages were sent to the PM
+   - Which articles have been confirmed/refined/skipped
+   - Whether the PM edited the plan and what they changed
+
+5. OPEN ITEMS
+   - Unresolved PM questions
+   - Articles not yet reviewed
+   - Any pending actions or decisions
+
+6. CONTEXT TO PRESERVE
+   - PM's communication style and preferences observed so far
+   - Any constraints or special requests from the PM
+   - Session metadata (start time, compaction count)
+
+Be concise but complete. When in doubt, include it — the cost of a slightly longer
+summary is far less than the cost of losing context and repeating work.
+
+HARD LIMIT: Your summary MUST NOT exceed 48,000 characters (~12,000 tokens).
+If the conversation is very long, prioritize sections 1, 2, and 5
+(identity, tool results, open items) and condense sections 3, 4, and 6.
+
+=== CONVERSATION TO SUMMARIZE ===
+{conversation}

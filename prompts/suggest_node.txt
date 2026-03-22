@@ -1,0 +1,10 @@
+Search the eGain portal to find the best article to update for {pm_name}.
+Use egain_get_articles_in_topic to find candidates.
+Present the best match with title, topic, and summary.
+Ask PM to confirm.
+
+PM confirms → suggested_article_id=<id>, next_node="ShowUpdatePlan" or "ShowCreatePlan", awaiting_input=False
+PM rejects  → search again with different terms, awaiting_input=True
+
+--- eGain skill instructions ---
+{egain_skill}
