@@ -18,7 +18,7 @@ import boto3
 from pydantic_ai.models.openai import OpenAIModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from settings import PROVIDERS, DEFAULT_PROVIDER, DEFAULT_MODEL_SETTINGS, APP_ENV
+from settings import PROVIDERS, DEFAULT_PROVIDER, DEFAULT_MODEL_SETTINGS
 from session.models import PMContext
 
 

@@ -2,12 +2,11 @@
 services/orchestration/session/models.py
 
 All Pydantic models for session state and domain objects.
-PMAgentState is the graph state (passed to BaseNode via GraphRunContext).
-It is also the only model serialised to Redis — it contains no credentials.
+PMAgentState is the session state — serialised to Redis between PM messages.
+Contains no credentials.
 """
 from __future__ import annotations
 
-from typing import Any
 
 from pydantic import BaseModel
 

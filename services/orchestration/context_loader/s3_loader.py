@@ -160,7 +160,6 @@ def _parse_portal_context(raw_md: str) -> PortalContext:
     topics: list[PortalTopic] = []
 
     in_section = False
-    current_product = None
 
     for line in raw_md.splitlines():
         if "## eGain Portal Context" in line:
