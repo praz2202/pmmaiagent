@@ -7,15 +7,15 @@ This file contains business data used by the PMM AI Agent. Updated in S3 without
 
 ## PM to Product Ownership
 
-| PM Name | Email | Owned Products | Role | Reports To |
-|---|---|---|---|---|
-| Varsha Thalange | varsha.thalange@egain.com | AIA, ECAI, ECKN, ECAD | PM Manager | Ashu Roy (CEO) |
-| Prasanth Sai | prasanth.sai@egain.com | AIA, ECAI | PM — AI Agent + AI Services | Varsha Thalange |
-| Aiushe Mishra | aiushe.mishra@egain.com | AIA | PM — AI Agent | Prasanth Sai |
-| Carlos España | carlos.espana@egain.com | ECAI | PM — AI Services | Prasanth Sai |
-| Ankur Mehta | ankur.mehta@egain.com | ECKN | PM — Knowledge | Varsha Thalange |
-| Peter Huang | peter.huang@egain.com | ECKN | PM — Knowledge | Ankur Mehta |
-| Kevin Dohina | kevin.dohina@egain.com | ECAD | PM — Advisor Desktop | Varsha Thalange |
+| PM Name | Email | eGain Username | Owned Products | Role | Reports To |
+|---|---|---|---|---|---|
+| Varsha Thalange | varsha.thalange@egain.com | vthalange | AIA, ECAI, ECKN, ECAD | PM Manager | Ashu Roy (CEO) |
+| Prasanth Sai | prasanth.sai@egain.com | psai | AIA, ECAI | PM — AI Agent + AI Services | Varsha Thalange |
+| Aiushe Mishra | aiushe.mishra@egain.com | aiushem | AIA | PM — AI Agent | Prasanth Sai |
+| Carlos España | carlos.espana@egain.com | cespana | ECAI | PM — AI Services | Prasanth Sai |
+| Ankur Mehta | ankur.mehta@egain.com | amehta | ECKN | PM — Knowledge | Varsha Thalange |
+| Peter Huang | peter.huang@egain.com | — | ECKN | PM — Knowledge | Ankur Mehta |
+| Kevin Dohina | kevin.dohina@egain.com | — | ECAD | PM — Advisor Desktop | Varsha Thalange |
 
 > Note: ECKN features may have ECAI dependencies. Flag these for Prasanth Sai / Carlos España review.
 
@@ -78,7 +78,7 @@ like `Release Notes` or `User Guides`, this is a contradiction. Flag it to the P
 There is ONE shared portal for all products. Currently it has content for
 AI Agent (AIA) and AI Services (ECAI — Search + Instant Answers).
 
-- Portal Short ID: `2ibo79`
+- Portal Short ID: `EASY-1219`
 - Article ID pattern: `EASY-{number}` (e.g. `EASY-17468`, `EASY-17368`)
 
 ### Portal Topic Hierarchy

@@ -96,6 +96,7 @@ def _parse_all_pm_contexts(raw_md: str) -> dict[str, PMContext]:
             pm_id=email.split("@")[0],
             name=row["name"].strip(),
             email=email,
+            egain_username=row.get("egain_username"),
             owned_products=products,
             reports_to=row.get("reports_to", "").strip() or None,
             aha_mappings={k: v for k, v in aha_mappings.items() if k in products},
@@ -122,9 +123,10 @@ def _parse_pm_ownership_table(raw_md: str) -> list[dict]:
                 rows.append({
                     "name": cols[0],
                     "email": cols[1],
-                    "products": cols[2],
-                    "role": cols[3] if len(cols) > 3 else "",
-                    "reports_to": cols[4] if len(cols) > 4 else "",
+                    "egain_username": cols[2] if len(cols) > 2 and cols[2] != "—" else None,
+                    "products": cols[3] if len(cols) > 3 else cols[2],
+                    "role": cols[4] if len(cols) > 4 else "",
+                    "reports_to": cols[5] if len(cols) > 5 else "",
                 })
     return rows
 

@@ -1,17 +1,14 @@
 """
-config/skills/feature-search/tools.py
+config/skills/feature_search/tools.py
 
 Feature search tool — registered on the PMM AI Agent.
-Calls Aha API via the shared pmm-skill-client Lambda.
 """
 from __future__ import annotations
 
 from typing import Any
 from pydantic_ai import RunContext
 from tools.deps import AgentDeps
-
-# Reuse the same Aha API config
-from config.skills.release_features.tools import AHA_API_CONFIG
+from tools.api_client import aha_api_call
 
 
 async def search_features(
@@ -27,11 +24,9 @@ async def search_features(
         product_key: Aha product key: 'AIA', 'ECAI', 'ECKN', or 'ECAD'.
         query: Search keyword — the feature name or part of it.
     """
-    return await ctx.deps.lambda_client.invoke_skill_lambda("pmm-skill-client", {
-        "method": "GET",
-        "path": f"/products/{product_key}/features",
-        "params": {"q": query, "fields": "name,custom_fields,tags"},
-        "api_config": AHA_API_CONFIG,
+    return await aha_api_call("GET", f"/products/{product_key}/features", {
+        "q": query,
+        "fields": "name,custom_fields,tags",
     })
 
 

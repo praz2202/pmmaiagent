@@ -1,25 +1,15 @@
 """
-config/skills/release-features/tools.py
+config/skills/release_features/tools.py
 
 Release feature tools — registered on the PMM AI Agent.
 Two-level fetch: Level 1 (lightweight list) then Level 2 (full detail on demand).
-Calls Aha API via the shared pmm-skill-client Lambda.
 """
 from __future__ import annotations
 
 from typing import Any
 from pydantic_ai import RunContext
 from tools.deps import AgentDeps
-
-AHA_API_CONFIG = {
-    "name": "aha",
-    "base_url": "https://{subdomain}.aha.io/api/v1",
-    "auth": {
-        "type": "basic",
-        "credentials_secret": "pmm-agent/aha-api-key",
-        "secret_field": "api_key",
-    },
-}
+from tools.api_client import aha_api_call
 
 
 # ── Level 1: Feature list ────────────────────────────────────────────────────
@@ -32,12 +22,7 @@ async def list_releases(ctx: RunContext[AgentDeps], product_key: str) -> Any:
     Args:
         product_key: Aha product key: 'ECAI', 'ECKN', or 'ECAD'.
     """
-    return await ctx.deps.lambda_client.invoke_skill_lambda("pmm-skill-client", {
-        "method": "GET",
-        "path": f"/products/{product_key}/releases",
-        "params": {},
-        "api_config": AHA_API_CONFIG,
-    })
+    return await aha_api_call("GET", f"/products/{product_key}/releases")
 
 
 async def fetch_release_features(
@@ -63,12 +48,7 @@ async def fetch_release_features(
     else:
         path = f"/releases/{release_id}/features"
         params = {"fields": "name,custom_fields,tags"}
-    return await ctx.deps.lambda_client.invoke_skill_lambda("pmm-skill-client", {
-        "method": "GET",
-        "path": path,
-        "params": params,
-        "api_config": AHA_API_CONFIG,
-    })
+    return await aha_api_call("GET", path, params)
 
 
 # ── Level 2: Full detail ─────────────────────────────────────────────────────
@@ -80,11 +60,8 @@ async def get_feature_detail(ctx: RunContext[AgentDeps], feature_id: str) -> Any
     Args:
         feature_id: Feature ID, e.g. 'AIA-42' or 'ECAI-123'.
     """
-    return await ctx.deps.lambda_client.invoke_skill_lambda("pmm-skill-client", {
-        "method": "GET",
-        "path": f"/features/{feature_id}",
-        "params": {"fields": "name,description,custom_fields,tags,attachments"},
-        "api_config": AHA_API_CONFIG,
+    return await aha_api_call("GET", f"/features/{feature_id}", {
+        "fields": "name,description,custom_fields,tags,attachments",
     })
 
 

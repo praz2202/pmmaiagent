@@ -40,6 +40,7 @@ class PMContext(BaseModel):
     pm_id: str                          # derived from email (before @)
     name: str
     email: str
+    egain_username: str | None = None   # eGain login username (for On-Behalf-Of auth)
     owned_products: list[str]           # ["AIA", "ECAI"]
     reports_to: str | None = None
     aha_mappings: dict[str, AhaMapping]  # product_code → AhaMapping

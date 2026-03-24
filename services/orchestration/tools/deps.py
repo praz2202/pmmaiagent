@@ -16,6 +16,7 @@ from functools import lru_cache
 
 import boto3
 from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from settings import PROVIDERS, DEFAULT_PROVIDER, DEFAULT_MODEL_SETTINGS
@@ -80,14 +81,23 @@ def _get_lambda_client() -> LambdaClient:
 
 
 @lru_cache(maxsize=1)
-def _get_llm_model() -> OpenAIModel:
-    """Build PydanticAI OpenAIModel from the configured provider.
+def _get_llm_model():
+    """Build PydanticAI model from the configured provider.
+    Uses GoogleModel for Gemini (native API with thought signatures).
+    Uses OpenAIModel for Anthropic/OpenAI (OpenAI-compatible endpoint).
     Cached — one model instance for all sessions.
     """
     provider = PROVIDERS[DEFAULT_PROVIDER]
     api_key = _resolve_llm_api_key(provider)
-    openai_provider = OpenAIProvider(base_url=provider["base_url"], api_key=api_key)
-    return OpenAIModel(provider["model"], provider=openai_provider)
+
+    if DEFAULT_PROVIDER == "gemini":
+        # Use native Google model — handles thought signatures properly
+        os.environ["GEMINI_API_KEY"] = api_key  # GoogleModel reads from env
+        return GoogleModel(provider["model"])
+    else:
+        # OpenAI-compatible endpoint for Anthropic/OpenAI
+        openai_provider = OpenAIProvider(base_url=provider["base_url"], api_key=api_key)
+        return OpenAIModel(provider["model"], provider=openai_provider)
 
 
 def _resolve_llm_api_key(provider: dict) -> str:

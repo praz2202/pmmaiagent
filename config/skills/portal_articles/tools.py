@@ -2,32 +2,21 @@
 config/skills/portal_articles/tools.py
 
 Portal article tools — registered on the PMM AI Agent.
-Read-only. Calls eGain Knowledge API v4 via the shared pmm-skill-client Lambda.
+Read-only. Calls eGain Knowledge API v4.
 
-ID format: eGain v4 APIs accept SHORT IDs only.
-Long ID (from company-context.md): 308200000003062
-Short ID (for API calls):          EASY-3062 (last 4 digits)
+API: https://api.egain.cloud/knowledge/portalmgr/v4/portals/{portalId}/...
+Auth: OAuth 2.0 Client Credentials (token cached process-level)
 """
 from __future__ import annotations
 
 from typing import Any
 from pydantic_ai import RunContext
 from tools.deps import AgentDeps
-
-EGAIN_API_CONFIG = {
-    "name": "egain",
-    "base_url": "https://api.egain.cloud/apis/v4/knowledge/portalmgr/api-bundled",
-    "auth": {
-        "type": "basic_onbehalf",
-        "credentials_secret": "pmm-agent/egain-credentials",
-        "client_id_field": "client_id",
-        "client_secret_field": "client_secret",
-    },
-}
+from tools.api_client import egain_api_call
 
 
 def _to_short_id(long_id: str) -> str:
-    """Convert long topic/portal ID to short form for eGain v4 API.
+    """Convert long topic/portal ID to short form.
     '308200000003062' → 'EASY-3062' (EASY- + last 4 digits).
     If already short (starts with EASY-), return as-is.
     """
@@ -40,25 +29,25 @@ def _to_short_id(long_id: str) -> str:
 
 async def get_child_topics(
     ctx: RunContext[AgentDeps],
-    parent_topic_id: str,
+    topic_id: str,
 ) -> Any:
-    """Get child sub-topics under a parent topic. Use to discover sub-topics
-    like 'Connectors', 'Channels', 'New Features for AI Agent 1.2.0', etc.
+    """Get a topic and its child sub-topics. Returns the topic tree with names,
+    article counts, and sub-topic IDs. Use to discover sub-topics like
+    'Connectors', 'New Features for AI Agent 1.2.0', etc.
 
     company-context.md only has TOP-LEVEL topic IDs. Call this to discover
-    what's underneath. Max depth is 2 levels (topic → sub-topic → sub-sub-topic).
+    what's underneath. Max depth is 2 levels.
 
     Args:
-        parent_topic_id: Topic ID from company-context.md (e.g. '308200000003062').
-                         Accepts both long and short format.
+        topic_id: Topic ID (e.g. '308200000003062' or 'EASY-3062').
     """
-    short_id = _to_short_id(parent_topic_id)
-    return await ctx.deps.lambda_client.invoke_skill_lambda("pmm-skill-client", {
-        "method": "GET",
-        "path": "/topic/getchildtopics",
-        "params": {"topicId": short_id},
-        "api_config": EGAIN_API_CONFIG,
-    })
+    short_id = _to_short_id(topic_id)
+    portal_id = ctx.deps.pm_context.portal_context.portal_short_id
+    return await egain_api_call(
+        "GET",
+        f"/portals/{portal_id}/topics/{short_id}",
+        params={"level": "1", "$lang": "en-US"},
+    )
 
 
 # ── Articles ─────────────────────────────────────────────────────────────────
@@ -67,38 +56,39 @@ async def browse_portal_topic(
     ctx: RunContext[AgentDeps],
     topic_id: str,
 ) -> Any:
-    """List articles in a topic. Returns article titles and article_summary.
+    """List articles in a topic. Returns article names, IDs, created/modified info.
     Use to survey existing content before deciding update vs create.
     Works at any level — top-level topics, sub-topics, or sub-sub-topics.
 
     Args:
-        topic_id: Topic ID (e.g. '308200000003062'). Accepts both long and short format.
+        topic_id: Topic ID (e.g. '308200000003062' or 'EASY-3062').
     """
     short_id = _to_short_id(topic_id)
-    return await ctx.deps.lambda_client.invoke_skill_lambda("pmm-skill-client", {
-        "method": "GET",
-        "path": "/article/getarticlesintopic",
-        "params": {"topicId": short_id},
-        "api_config": EGAIN_API_CONFIG,
-    })
+    portal_id = ctx.deps.pm_context.portal_context.portal_short_id
+    return await egain_api_call(
+        "GET",
+        f"/portals/{portal_id}/articles",
+        params={"$filter[topicId]": short_id},
+    )
 
 
 async def read_portal_article(
     ctx: RunContext[AgentDeps],
     article_id: str,
 ) -> Any:
-    """Get full article content including HTML body. Only call when title/summary
-    suggests this article needs updating or when you need to read content to decide.
+    """Get full article content including HTML body. Only call when you need
+    to read the article to decide on update or to know exactly what to change.
+
+    NOTE: May require user-scoped token for full content access.
 
     Args:
-        article_id: Article short ID (e.g. 'EASY-17468').
+        article_id: Article short ID (e.g. 'EASY-17368').
     """
-    return await ctx.deps.lambda_client.invoke_skill_lambda("pmm-skill-client", {
-        "method": "GET",
-        "path": "/article/getarticlebyid",
-        "params": {"articleId": article_id},
-        "api_config": EGAIN_API_CONFIG,
-    })
+    portal_id = ctx.deps.pm_context.portal_context.portal_short_id
+    return await egain_api_call(
+        "GET",
+        f"/portals/{portal_id}/articles/{article_id}",
+    )
 
 
 PORTAL_ARTICLES_TOOLS = [
