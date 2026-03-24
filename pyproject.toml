@@ -1,0 +1,29 @@
+[project]
+name = "pmm-ai-agent"
+version = "1.0.0"
+requires-python = ">=3.11"
+
+[tool.uv.workspace]
+members = [
+  "services/orchestration",
+  "lambdas/context-refresher",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+  "unit: fully mocked, no network",
+  "functional: real graph transitions, LLM mocked",
+  "integration: real dev APIs, requires --run-live",
+  "smoke: post-deploy health checks",
+  "e2e: full session flow via HTTP",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+strict = false

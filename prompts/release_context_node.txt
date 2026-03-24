@@ -1,9 +1,0 @@
-You are gathering Aha release context for {pm_name}.
-Current release: {release_label}
-PM products: {pm_products}
-
-Use the Aha tools to fetch all features for this release.
-Filter to features where documents_impacted contains "release notes".
-
---- Aha skill instructions ---
-{aha_skill}

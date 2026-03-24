@@ -1,8 +1,0 @@
-Refine the article content based on PM feedback.
-Article: {article_title}
-Current content: {current_content}
-
-PM feedback: {pm_feedback}
-
-Apply the PM's feedback to improve the article content.
-Keep the same HTML format. Return the refined content.

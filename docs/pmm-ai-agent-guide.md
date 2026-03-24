@@ -110,7 +110,7 @@ Configure the CLI profile:
 
 ```bash
 aws configure --profile pmm-agent-dev
-# Enter: Access Key ID, Secret Access Key, region (us-east-1), output format (json)
+# Enter: Access Key ID, Secret Access Key, region (us-west-2), output format (json)
 
 # Verify it works
 aws sts get-caller-identity --profile pmm-agent-dev
@@ -125,28 +125,35 @@ aws sts get-caller-identity --profile pmm-agent-dev
 
 Before any code can run, you need these credentials. Get them from the respective systems and have them ready — they get stored in AWS Secrets Manager in Step 2.
 
-**Aha API key:**
+**1. Gemini API key (primary LLM provider):**
+- Go to `aistudio.google.com` → Get API Key → Create API key
+- Model: `gemini-3-flash-preview` with `reasoning_effort: "low"` (configured in `settings.py`)
+- Note down the API key
+
+**2. Anthropic API key (secondary LLM provider):**
+- Go to `console.anthropic.com` → API Keys → Create Key
+- Name it `pmm-agent-prod`
+- Model: `claude-sonnet-4-20250514` (used if you switch `DEFAULT_PROVIDER` in `settings.py`)
+- Note it down
+
+**3. Aha API key:**
 - Log in to `egain.aha.io` → Account Settings → Developer → API Keys
 - Create a **service account key** (not your personal key — this runs in production)
 - Note it down; you will never see it again after closing the dialog
 
-**eGain Knowledge API v4 credentials:**
-- Get a `client_app` and `client_secret` for on-behalf-of-customer auth from your eGain admin
-- Confirm the base URL of the Knowledge API (e.g. `apidev.egain.com`)
+**4. eGain Knowledge API v4 credentials:**
+- Get a `client_id` and `client_secret` for on-behalf-of-customer auth from your eGain admin
+- Confirm the base URL of the Knowledge API (e.g. `api.egain.cloud`)
 - Verify the service account has read access to portal articles
 
-**Anthropic API key:**
-- Go to `console.anthropic.com` → API Keys → Create Key
-- Name it `pmm-agent-prod`
-- Note it down
-
-**AHA subdomain:**
+**5. Aha subdomain:**
 - Your Aha URL is `https://egain.aha.io` → subdomain is `egain`
 
-**Checkpoint 0.3:** You have all four values written down (not in any file yet):
+**Checkpoint 0.3:** You have all five values written down (not in any file yet):
+- Gemini API key (primary)
+- Anthropic API key (secondary)
 - Aha API key
-- eGain username + password + host
-- Anthropic API key
+- eGain client_id + client_secret
 - Aha subdomain (`egain`)
 
 ---
@@ -164,18 +171,19 @@ git checkout -b main
 # Create the full directory structure in one command
 mkdir -p \
   context \
-  config/skills/aha/scripts \
-  config/skills/aha/references \
-  config/skills/egain/scripts \
-  config/skills/egain/references \
-  config/skills/company-context/references \
+  config/skills/release-features \
+  config/skills/feature-search \
+  config/skills/release-notes \
+  config/skills/portal-articles \
+  config/skills/context \
+  config/skills/company-context \
   docs \
   frontend \
   infrastructure/terraform/modules/{networking,redis,s3,secrets,ecs,lambda} \
   infrastructure/scripts \
   infrastructure/git-hooks \
   services/orchestration/context_loader \
-  services/orchestration/graph/nodes \
+  services/orchestration \
   services/orchestration/session \
   services/orchestration/tools \
   lambdas/context-refresher \
@@ -227,17 +235,17 @@ AHA_SUBDOMAIN=egain
 AHA_API_KEY_OVERRIDE=          # set locally to skip Secrets Manager
 
 # eGain (read-only Knowledge API v4)
-EGAIN_API_HOST=apidev.egain.com
-EGAIN_CLIENT_APP_OVERRIDE=     # set locally to skip Secrets Manager
+EGAIN_API_HOST=api.egain.cloud
+EGAIN_CLIENT_ID_OVERRIDE=     # set locally to skip Secrets Manager
 EGAIN_CLIENT_SECRET_OVERRIDE=  # set locally to skip Secrets Manager
 
-# LLM Providers (set the one matching DEFAULT_PROVIDER in config.py)
+# LLM Providers (set the one matching DEFAULT_PROVIDER in settings.py)
 GEMINI_API_KEY=                # default provider — set locally to skip Secrets Manager
 CLAUDE_API_KEY=                # Anthropic — set if switching DEFAULT_PROVIDER
 OPENAI_API_KEY=                # OpenAI — set if switching DEFAULT_PROVIDER
 
 # AWS
-AWS_DEFAULT_REGION=us-east-1
+AWS_DEFAULT_REGION=us-west-2
 AWS_PROFILE=pmm-agent-dev
 
 # S3 context bucket
@@ -293,7 +301,7 @@ EOF
 # services/orchestration/requirements.txt
 cat > services/orchestration/requirements.txt << 'EOF'
 pydantic-ai>=0.1.0
-pydantic-graph>=0.1.0
+# pydantic-graph not needed — single-agent architecture, no graph
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 redis[asyncio]>=5.0.0
@@ -343,11 +351,15 @@ services:
       - .env.local
     environment:
       - REDIS_URL=redis://redis:6379
+      - DYNAMODB_ENDPOINT=http://dynamodb:8000
     volumes:
       - ./config:/app/config:ro
       - ./context:/app/context:ro
+      - ./prompts:/app/prompts:ro
     depends_on:
       redis:
+        condition: service_healthy
+      dynamodb:
         condition: service_healthy
     restart: unless-stopped
 
@@ -360,9 +372,37 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
+  dynamodb:
+    image: amazon/dynamodb-local:latest
+    ports:
+      - "8042:8000"
+    command: "-jar DynamoDBLocal.jar -sharedDb"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:8000 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 ```
 
-**Checkpoint 1.3:** `docker compose up redis -d` starts Redis. `docker compose ps` shows it healthy. `redis-cli ping` returns `PONG`.
+**Local dev services:**
+
+| Service | Port | Purpose |
+|---|---|---|
+| Redis | `localhost:6379` | Live session state (`PMAgentState`) |
+| DynamoDB Local | `localhost:8042` | Session history (written at session end) |
+| Orchestration | `localhost:8000` | FastAPI app (started later) |
+
+In production, Redis → ElastiCache, DynamoDB Local → AWS DynamoDB, S3 → real S3 bucket.
+
+**Checkpoint 1.3:** Start both services and verify:
+
+```bash
+docker compose up redis dynamodb -d
+docker compose ps                    # both show "healthy"
+redis-cli ping                       # returns PONG
+curl -s http://localhost:8042        # returns "healthy" or JSON
+```
 
 ---
 
@@ -407,7 +447,7 @@ Create the secret entries now so you can reference their ARNs in all subsequent 
 
 ```bash
 export AWS_PROFILE=pmm-agent-dev
-export AWS_DEFAULT_REGION=us-east-1
+export AWS_DEFAULT_REGION=us-west-2
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 # Create secrets (replace placeholders with your real values)
@@ -417,7 +457,7 @@ aws secretsmanager create-secret \
 
 aws secretsmanager create-secret \
   --name "pmm-agent/egain-credentials" \
-  --secret-string "{\"client_app\":\"YOUR_EGAIN_CLIENT_APP\",\"client_secret\":\"YOUR_EGAIN_CLIENT_SECRET\"}"
+  --secret-string "{\"client_id\":\"YOUR_EGAIN_CLIENT_ID\",\"client_secret\":\"YOUR_EGAIN_CLIENT_SECRET\"}"
 
 aws secretsmanager create-secret \
   --name "pmm-agent/gemini-api-key" \
@@ -446,7 +486,7 @@ BUCKET_NAME="egain-pmm-agent-context-${ACCOUNT_ID}"
 
 aws s3api create-bucket \
   --bucket "${BUCKET_NAME}" \
-  --region us-east-1
+  --region us-west-2
 
 # Enable versioning
 aws s3api put-bucket-versioning \
@@ -483,9 +523,9 @@ CONTEXT_BUCKET=egain-pmm-agent-context-YOURACCOUNTID
 ```bash
 aws ecr create-repository \
   --repository-name pmm-orchestration \
-  --region us-east-1
+  --region us-west-2
 
-ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com"
+ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com"
 echo "ECR registry: ${ECR_REGISTRY}/pmm-orchestration"
 ```
 
@@ -499,7 +539,7 @@ echo "ECR registry: ${ECR_REGISTRY}/pmm-orchestration"
 # infrastructure/terraform/terraform.tfvars.example
 cat > infrastructure/terraform/terraform.tfvars.example << 'EOF'
 aws_account_id = "YOUR_ACCOUNT_ID"
-aws_region     = "us-east-1"
+aws_region     = "us-west-2"
 env            = "dev"
 vpc_cidr       = "10.0.0.0/16"
 EOF
@@ -532,600 +572,182 @@ REDIS_URL=redis://REDIS_ENDPOINT_FROM_TERRAFORM:6379
 
 ---
 
-## Section 3 — Skill Folders
+## Section 3 — Skills
 
-Write the three skill folders. These are the heart of what the agent knows — bad content here produces bad agent decisions. Take time on these.
-
-### Step 3.1 — Aha skill — `SKILL.md`
-
-```bash
-cat > config/skills/aha/SKILL.md << 'SKILL'
----
-name: aha
-description: >
-  Fetches release features and specs from Aha for eGain products (AIA, ECAI, ECKN, ECAD).
-  Use when a PM needs release context: feature lists, specs, attachments, Jira URLs, or
-  component mappings. Trigger on: release documentation, feature specs, release notes planning.
----
-
-# Aha Skill
-
-## How the tools work together
-
-- `aha_list_releases` — returns release summaries for a product (use for PM selection)
-- `aha_get_release_features` — returns full feature details in one call (description, custom_fields, tags, attachments)
-- `aha_get_feature_attachments` — downloads image attachments for a specific feature
-- `aha_get_components` — returns the component tree for a product
-
-AIA uses version tags (`AIA 1.2.0`), not release IDs. All other products use standard release IDs.
-See [references/aia-releases.md](references/aia-releases.md) for AIA-specific fetch patterns.
-
-## Filtering features for release notes
-
-After fetching features, check `custom_fields[name="documents_impacted"].value`.
-If it contains "release notes" (case-insensitive), the feature needs a portal article update.
-See [references/filtering.md](references/filtering.md) for field paths and edge cases.
-
-## Cross-product: ECKN + ECAI
-
-ECKN features may have ECAI component dependencies. Check component tags —
-if an ECAI component is present, flag it in the plan for Prasanth Sai or Carlos España review.
-
-## Gotchas
-
-- AIA does NOT use the Release field — `aha_list_releases` returns nothing useful for AIA. Use tags instead.
-- Aha CDN image URLs require Aha auth — NEVER embed them in portal HTML. Download via `aha_get_feature_attachments` first.
-- `documents_impacted` filter is case-insensitive — "Release Notes" and "release notes" both match.
-- Rate limit is 100 req/min shared across ALL concurrent sessions — 429 errors are expected under load, surface to PM.
-- Jira URL has two field paths: try `custom_fields["jira_url"]` first, fall back to `integration_fields["url"]`. If both null, note it but don't block.
-- Always pass release_id (not release name) to `aha_get_release_features` for standard products.
-
-See [references/api.md](references/api.md) for full field path details and API reference.
-SKILL
-```
-
-**Checkpoint 3.1:** `cat config/skills/aha/SKILL.md` — file exists, YAML frontmatter is at top.
-
----
-
-### Step 3.2 — Aha skill — `tools.py`
-
-```python
-"""
-config/skills/aha/tools.py
-
-Aha tool functions — imported directly by agent nodes.
-Each function has typed params, a docstring (used as the tool description),
-and calls ctx.deps.lambda_client.invoke_skill_lambda() to hit the Aha API.
-"""
-from __future__ import annotations
-
-from typing import Any
-from pydantic_ai import RunContext
-from tools.deps import AgentDeps
-
-AHA_API_CONFIG = {
-    "name": "aha",
-    "base_url": "https://{subdomain}.aha.io/api/v1",
-    "auth": {
-        "type": "basic",
-        "credentials_secret": "pmm-agent/aha-api-key",
-        "secret_field": "api_key",
-    },
-    "rate_limit": {
-        "requests_per_minute": 100,
-        "note": "No client-side rate limiter — 429 errors propagate to the agent",
-    },
-}
-
-
-async def aha_list_releases(ctx: RunContext[AgentDeps], product_key: str) -> Any:
-    """List active releases for an Aha product. Returns releases with status
-    'in_progress' or 'planned' only. Use first to show the PM which releases
-    are available (summary only — for selection, not full details).
-    For AIA, this is not needed — AIA uses version tags, not release IDs.
-
-    Args:
-        product_key: Aha product key: 'AIA', 'ECAI', 'ECKN', or 'ECAD'.
-    """
-    return await ctx.deps.lambda_client.invoke_skill_lambda("pmm-skill-client", {
-        "method": "GET",
-        "path": f"/products/{product_key}/releases",
-        "params": {"product_key": product_key},
-        "api_config": AHA_API_CONFIG,
-    })
-
-
-async def aha_get_release_features(
-    ctx: RunContext[AgentDeps],
-    release_id: str | None = None,
-    product_key: str | None = None,
-    tag: str | None = None,
-    fields: str = "name,description,custom_fields,tags,attachments",
-) -> Any:
-    """Get all features for a release with FULL details inline (description,
-    custom_fields, tags, attachments). Uses the Aha `fields` query parameter
-    to return everything in a single API call — no per-feature detail fetches.
-    For standard products (ECAI, ECKN, ECAD): pass release_id.
-    For AIA: pass product_key + tag instead (AIA uses version tags, not releases).
-
-    Args:
-        release_id: Aha release ID from aha_list_releases. Required for ECAI/ECKN/ECAD.
-        product_key: Aha product key. Required for AIA tag-based fetch.
-        tag: AIA version tag, e.g. 'AIA 1.2.0'. Only for AIA.
-        fields: Comma-separated fields to include. Default returns full details.
-    """
-    path = f"/releases/{release_id}/features" if release_id else f"/products/{product_key}/features"
-    return await ctx.deps.lambda_client.invoke_skill_lambda("pmm-skill-client", {
-        "method": "GET",
-        "path": path,
-        "params": {"release_id": release_id, "product_key": product_key, "tag": tag, "fields": fields},
-        "api_config": AHA_API_CONFIG,
-    })
-
-
-async def aha_get_feature_attachments(ctx: RunContext[AgentDeps], feature_id: str) -> Any:
-    """Get image attachments for a feature. Returns download URLs for inline images
-    in the feature description. Only image/* content types are returned.
-    Download these images — never link directly to Aha CDN URLs.
-
-    Args:
-        feature_id: Feature ID, e.g. 'ECAI-123'.
-    """
-    return await ctx.deps.lambda_client.invoke_skill_lambda("pmm-skill-client", {
-        "method": "GET",
-        "path": f"/features/{feature_id}/attachments",
-        "params": {"feature_id": feature_id},
-        "api_config": AHA_API_CONFIG,
-    })
-
-
-async def aha_get_components(ctx: RunContext[AgentDeps], product_key: str) -> Any:
-    """Get the component tree for an Aha product. Used to understand which part
-    of the product a feature belongs to when planning documentation structure.
-
-    Args:
-        product_key: Aha product key: 'AIA', 'ECAI', 'ECKN', or 'ECAD'.
-    """
-    return await ctx.deps.lambda_client.invoke_skill_lambda("pmm-skill-client", {
-        "method": "GET",
-        "path": f"/products/{product_key}/components",
-        "params": {"product_key": product_key},
-        "api_config": AHA_API_CONFIG,
-    })
-
-
-AHA_TOOLS = [
-    aha_list_releases,
-    aha_get_release_features,
-    aha_get_feature_attachments,
-    aha_get_components,
-]
-```
-
-**Checkpoint 3.2:** `python -c "from config.skills.aha.tools import AHA_TOOLS; print(len(AHA_TOOLS), 'tools defined')"` prints `4 tools defined`.
-
----
-
-### Step 3.3 — Aha skill — `scripts/aha_client.py` (optional helpers)
-
-Create `config/skills/aha/scripts/aha_client.py`. This file contains Aha-specific helpers (AIA path resolution) that the generic `pmm-skill-client` Lambda can import. Auth is handled by the Lambda based on `AHA_API_CONFIG` from `tools.py` — not by this file.
-
-```python
-"""
-config/skills/aha/scripts/aha_client.py
-
-Aha-specific helpers used by pmm-skill-client Lambda.
-Auth is NOT handled here — it's config-driven from AHA_API_CONFIG in tools.py.
-"""
-from __future__ import annotations
-
-
-def resolve_aha_path(path: str, params: dict) -> str:
-    """Handle AIA tag-based fetch: switch from /releases/{id}/features to /products/{key}/features."""
-    if "product_key" in params and "tag" in params and "release_id" not in params:
-        return f"/products/{params['product_key']}/features"
-    return path
-```
-
-**Checkpoint 3.3:** `python config/skills/aha/scripts/aha_client.py` runs without import errors.
-
----
-
-### Step 3.4 — Aha skill — `references/api.md`
-
-```bash
-cat > config/skills/aha/references/api.md << 'REF'
-# Aha API Reference
-
-## Product keys
-  AIA   → egain.aha.io/products/AIA
-  ECAI  → egain.aha.io/products/ECAI
-  ECKN  → egain.aha.io/products/ECKN
-  ECAD  → egain.aha.io/products/ECAD
-
-## Feature custom field paths (JSONPath notation)
-  documents_impacted:
-    feature.custom_fields[?(@.name=="documents_impacted")].value
-  jira_url (primary):
-    feature.custom_fields[?(@.name=="jira_url")].value
-  jira_url (fallback):
-    feature.integration_fields[?(@.name=="url")].value
-
-## AIA version tag format
-  feature.tags[]  — look for any tag matching pattern: AIA \d+\.\d+\.\d+
-  Examples: "AIA 1.2.0", "AIA 2.0.0"
-
-## Release name formats
-  Standard (ECAI, ECKN, ECAD): "YY.MM"  e.g. "25.03"
-  AIA:                          "AIA x.x.x"  e.g. "AIA 1.2.0"
-
-## Release status filter
-  Only return: "in_progress", "planned"
-  Skip:        "shipped", "archived", "will_not_ship"
-
-## Fields parameter (inline detail fetch)
-  Use ?fields=name,description,custom_fields,tags,attachments on list endpoints
-  to get full feature details in a single API call. No per-feature detail fetches needed.
-  Example: GET /releases/{id}/features?fields=name,description,custom_fields,tags,attachments
-  Example: GET /products/AIA/features?tag=AIA+1.2.0&fields=name,description,custom_fields,tags,attachments
-
-## Attachment download
-  attachment.download_url — requires Basic auth header (handled by aha_client Lambda)
-  Download and base64-encode images before referencing in portal content.
-
-## Rate limit
-  100 req/min per API key — shared across all concurrent user sessions.
-  No client-side rate limiter — if Aha returns 429, the Lambda propagates
-  the error and the agent surfaces it to the PM.
-REF
-
-# Aha progressive disclosure — additional reference files
-cat > config/skills/aha/references/aia-releases.md << 'REF'
-# AIA Release Fetch Pattern
-
-AIA (AI Agent) does NOT use the standard Aha Release field.
-Instead, individual features are tagged with version strings.
-
-## How AIA versioning works
-
-- Features are tagged with version strings: `AIA 1.0.0`, `AIA 1.2.0`, `AIA 2.0.0`
-- Tag format regex: `AIA \d+\.\d+\.\d+`
-- All AIA features live at: egain.aha.io/products/AIA/feature_cards
-
-## Fetching AIA features
-
-Use `aha_get_release_features(product_key="AIA", tag="AIA x.x.x")`.
-Do NOT use `aha_list_releases` for AIA — it returns standard releases which AIA doesn't use.
-
-## Detecting AIA features in mixed results
-
-If you have features from multiple products, check tags:
-```
-feature.tags[] → look for any matching "AIA \d+\.\d+\.\d+"
-```
-If a tag matches, the feature belongs to that AIA release.
-
-## Standard products (ECAI, ECKN, ECAD)
-
-These use the Release field. Fetch with `aha_get_release_features(release_id=<id>)`.
-Get the release_id from `aha_list_releases` first — always pass the ID, not the name.
-Release name format: YY.MM (e.g. "25.03" for March 2025).
-REF
-
-cat > config/skills/aha/references/filtering.md << 'REF'
-# Feature Filtering for Release Notes
-
-## Which features need portal articles?
-
-Check `custom_fields[name="documents_impacted"].value`:
-- Contains "release notes" (case-insensitive) → needs a portal article update
-- Contains only "admin guide" or "internal only" → skip for release notes
-
-## Field paths (JSONPath)
+Skills are organized by **PM capability**, not by API. Each skill teaches the agent how to accomplish a task — it may use tools from any API. This follows Anthropic's skill standard (see `github.com/anthropics/skills`).
 
 ```
-documents_impacted:  feature.custom_fields[?(@.name=="documents_impacted")].value
-jira_url (primary):  feature.custom_fields[?(@.name=="jira_url")].value
-jira_url (fallback): feature.integration_fields[?(@.name=="url")].value
+config/skills/
+├── release-features/          ← Fetching + reviewing release features
+│   ├── SKILL.md               ← Knowledge: two-level fetch, Documents Impacted rules
+│   └── tools.py               ← Tools: fetch_release_features(), get_feature_detail()
+│                                  Calls Aha API via Lambda
+│
+├── feature-search/            ← Finding features by vague name
+│   ├── SKILL.md               ← Knowledge: ask for release, show top 7 with links
+│   └── tools.py               ← Tools: search_features()
+│                                  Calls Aha API via Lambda
+│
+├── release-notes/             ← Creating release notes for features
+│   └── SKILL.md               ← Knowledge: article format, one-at-a-time workflow
+│                                  No tools.py — agent generates content with LLM reasoning
+│
+├── portal-articles/           ← Browsing, comparing, updating, creating portal articles
+│   ├── SKILL.md               ← Knowledge: summary-first, create vs update logic, topic hierarchy
+│   └── tools.py               ← Tools: browse_portal_topic(), read_portal_article(),
+│                                  check_portal_for_release()
+│                                  Calls eGain API via Lambda
+│
+├── context/                   ← Dynamic context loading (NOT dumped into system prompt)
+│   └── tools.py               ← Tools: get_pm_context(), get_release_tracking(),
+│                                  get_portal_structure(), get_document_rules()
+│                                  Reads from company-context.md (local or S3)
+│
+└── company-context/           ← Format spec for company-context.md (developer reference)
+    └── SKILL.md               ← NOT loaded by agent — reference for developers + parser
 ```
 
-## Cross-product: ECKN + ECAI
+### Skill types
 
-When documenting a ECKN release, scan each feature's component tags.
-If a feature has an ECAI component tag → flag it in the documentation plan.
-Note: "Requires ECAI review — Prasanth Sai or Carlos España should review."
+| Type | Has tools.py? | Example | What it does |
+|---|---|---|---|
+| **Tool skill** | Yes | `release-features/`, `portal-articles/` | SKILL.md teaches when/how to use tools. tools.py calls Lambda. |
+| **Knowledge skill** | No | `release-notes/` | SKILL.md teaches the agent a workflow. Agent uses LLM reasoning, no API calls. |
+| **Context skill** | Yes | `context/` | tools.py loads context dynamically from company-context.md. Agent calls these as needed. |
+| **Reference** | No tools, not loaded | `company-context/` | Developer documentation for the company-context.md format. |
 
-## Jira URL handling
+### Dynamic context loading
 
-- Try `custom_fields["jira_url"]` first
-- Fall back to `integration_fields["url"]`
-- If both null: note it in the plan but do not block the article update
-REF
+The system prompt is **minimal** — just the PM name and products. Everything else is loaded by the agent via context tools WHEN it needs it:
+
+```
+System prompt (always loaded):
+  "You are the PMM AI Agent. PM: Prasanth Sai. Products: AIA, ECAI."
+
+Agent needs release tracking rules:
+  → calls get_release_tracking("AIA")
+  → gets: "AIA uses version tags, not release IDs..."
+
+Agent needs portal structure:
+  → calls get_portal_structure()
+  → gets: topic hierarchy with IDs
+
+Agent needs Documents Impacted rules:
+  → calls get_document_rules()
+  → gets: tag meanings table
 ```
 
----
+This saves tokens on every turn. The agent only loads what it needs.
 
-### Step 3.5 — eGain skill — `SKILL.md`
+### Lambda architecture
 
-```bash
-cat > config/skills/egain/SKILL.md << 'SKILL'
----
-name: egain
-description: >
-  Reads articles from the eGain Knowledge portal (read-only). Use when surveying
-  existing portal content, comparing articles to planned changes, or inspecting
-  article HTML. Trigger on: portal articles, knowledge base content, article comparison.
-  No write APIs exist — agent presents HTML content to PM for manual apply.
----
+All API tools call ONE shared `pmm-skill-client` Lambda:
 
-# eGain Portal Skill (Read-Only)
-
-## How the tools work together
-
-- `egain_get_articles_in_topic(portal_id, topic_id)` — lists articles in a topic. Use topic IDs from `pm_context.portal_context`.
-- `egain_get_article_by_id(portal_id, article_id)` — gets a single article's full HTML content. Use sparingly — only for articles likely to be updated.
-
-Topic IDs and portal IDs come from `pm_context.portal_context` (loaded from company-context.md at session start). No "list topics" call needed.
-
-## Output: create vs update recommendations
-
-The eGain API is read-only — no create or update endpoints exist. When producing content:
-- **Clearly matches existing article** → recommend update (show article title, ID, updated HTML)
-- **No existing article covers this** → recommend create (show suggested title, topic, full HTML)
-- **Ambiguous** → present both options with reasoning, let PM choose
-
-See [references/html-format.md](references/html-format.md) for portal HTML conventions.
-
-## Gotchas
-
-- The API is read-only — there are NO create, update, or delete endpoints. Don't look for them.
-- Topic IDs are already in `pm_context.portal_context` — don't waste a tool call trying to list topics.
-- `egain_get_article_by_id` returns the full HTML body — can be large. Only call for articles you actually need to compare.
-- Portal accepts HTML only: `<h2>`, `<h3>`, `<p>`, `<ul>/<li>`, `<img>`. No Markdown.
-- Image URLs must be portal URLs — never use Aha CDN URLs (they require Aha auth).
-- On-behalf-of-customer auth is handled by the Lambda — you never see credentials.
-
-See references/api.md for field conventions.
-SKILL
+```
+tools.py function → ctx.deps.lambda_client.invoke_skill_lambda("pmm-skill-client", payload)
+                     ↓
+                 ONE Lambda → authenticates → makes HTTP request → returns response
 ```
 
----
+The Lambda handles auth (basic, on-behalf-of-customer) using credentials from Secrets Manager. The ECS process never sees API keys. Adding a new API = add auth type to Lambda.
 
-### Step 3.6 — eGain skill — `tools.py`
+### Step 3.1 — Release Features skill
 
-```python
-"""
-config/skills/egain/tools.py
+Create `config/skills/release-features/SKILL.md`:
 
-eGain tool functions — imported directly by agent nodes.
-Read-only tools for portal article inspection.
-"""
-from __future__ import annotations
+The knowledge file — teaches the agent how to fetch and present release features.
+Covers: AIA tags vs release IDs, Documents Impacted rules, two-level fetch pattern,
+cross-product dependencies. Business rules (release tracking, Documents Impacted tag
+meanings) are loaded dynamically via context tools, NOT hardcoded here.
 
-from typing import Any
-from pydantic_ai import RunContext
-from tools.deps import AgentDeps
+Create `config/skills/release-features/tools.py`:
 
-EGAIN_API_CONFIG = {
-    "name": "egain",
-    "base_url": "https://apidev.egain.com/apis/v4/knowledge/portalmgr/api-bundled",
-    "auth": {
-        "type": "basic_onbehalf",
-        "credentials_secret": "pmm-agent/egain-credentials",
-        "client_app_field": "client_app",
-        "client_secret_field": "client_secret",
-    },
-    "headers": {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    },
-}
-
-
-async def egain_get_articles_in_topic(ctx: RunContext[AgentDeps], portalId: str, topicId: str) -> Any:
-    """List all articles in a specific portal topic. Returns metadata including
-    title, status, and last-updated date. Use to survey existing content
-    before planning updates. Topic IDs come from pm_context.portal_context.
-
-    Args:
-        portalId: Portal ID from pm_context.portal_context, e.g. '1234'.
-        topicId: Topic ID from pm_context.portal_context, e.g. 'topic_001'.
-    """
-    return await ctx.deps.lambda_client.invoke_skill_lambda("pmm-skill-client", {
-        "method": "GET",
-        "path": "/article/getarticlesintopic",
-        "params": {"portalId": portalId, "topicId": topicId},
-        "api_config": EGAIN_API_CONFIG,
-    })
-
-
-async def egain_get_article_by_id(ctx: RunContext[AgentDeps], portalId: str, articleId: str) -> Any:
-    """Get a single article's full content including HTML body. Use to inspect
-    current article content for comparison with planned changes. Use sparingly
-    to avoid token overload — only for articles that will likely be updated.
-
-    Args:
-        portalId: Portal ID from pm_context.portal_context.
-        articleId: Article ID from egain_get_articles_in_topic results.
-    """
-    return await ctx.deps.lambda_client.invoke_skill_lambda("pmm-skill-client", {
-        "method": "GET",
-        "path": "/article/getarticlebyid",
-        "params": {"portalId": portalId, "articleId": articleId},
-        "api_config": EGAIN_API_CONFIG,
-    })
-
-
-EGAIN_TOOLS = [
-    egain_get_articles_in_topic,
-    egain_get_article_by_id,
-]
-```
-
-**Checkpoint 3.6:** `python -c "from config.skills.egain.tools import EGAIN_TOOLS; print(len(EGAIN_TOOLS), 'tools defined')"` prints `2 tools defined`.
+Tool functions that call the Aha API via the shared Lambda:
+- `fetch_release_features(product_key, release_id?, tag?)` — Level 1: titles + Jira URLs + Documents Impacted tags
+- `get_feature_detail(feature_id)` — Level 2: full description + attachments (only after PM confirms)
 
 ---
 
-### Step 3.7 — eGain skill — `references/api.md`
+### Step 3.2 — Feature Search skill
 
-No `scripts/` directory needed for eGain — the two read-only tools are fully generic. Auth is handled by the `pmm-skill-client` Lambda based on the `EGAIN_API_CONFIG` constant in `tools.py` (`type: basic_onbehalf`).
+Create `config/skills/feature-search/SKILL.md`:
 
-No `scripts/egain_client.py` file is needed. The two read-only eGain tools are fully generic — the `pmm-skill-client` Lambda handles on-behalf-of-customer auth using `client_app` and `client_secret` from Secrets Manager, as declared in `tools.py` (`EGAIN_API_CONFIG["auth"]["type"]: basic_onbehalf`).
+Teaches the agent how to find features by vague name. Workflow: ask PM for release
+first to narrow results, search Aha, show top 7 matches with Aha links.
+
+Create `config/skills/feature-search/tools.py`:
+
+- `search_features(product_key, query)` — keyword search in Aha, returns matching features
 
 ---
 
-### Step 3.8 — eGain skill — `references/api.md` + company-context skill
+### Step 3.3 — Release Notes skill (knowledge only)
 
-```bash
-cat > config/skills/egain/references/api.md << 'REF'
-# eGain Knowledge API v4 Reference (Read-Only)
+Create `config/skills/release-notes/SKILL.md`:
 
-## Base URL
-https://apidev.egain.com/apis/v4/knowledge/portalmgr/api-bundled
+Pure knowledge — no tools.py. Teaches the agent:
+- The release notes article format (Jira Link, Overview, Release Notes, Helpdoc needed, etc.)
+- One-at-a-time workflow: generate release notes per feature, PM reviews each
+- When to flag Helpdoc updates needed
+- Content in Markdown for PM review
 
-## Authentication
-On-behalf-of-customer auth using client_app and client_secret from Secrets Manager.
-The pmm-skill-client Lambda handles auth automatically.
-
-## Available endpoints (read-only)
-
-### GET /article/getarticlesintopic
-Returns all articles in a specific topic.
-Query params: portalId (required), topicId (required)
-Returns: list of articles with id, title, status, summary, updated_at
-
-### GET /article/getarticlebyid
-Returns a single article with full HTML content.
-Query params: portalId (required), articleId (required)
-Returns: article with id, title, status, content_html, topic_id, updated_at
-
-## No write endpoints
-There are no create or update APIs. The agent presents HTML content to the PM
-in the chat for manual application in the eGain portal.
-
-## Content format
-Portal articles use HTML. Common elements: <h2> <h3> <p> <ul> <li> <img>
-Images must be re-uploaded to portal — never use Aha CDN URLs.
-
-## Article ID format
-Numeric string, e.g. "10234"
-
-## Portal and topic IDs
-Portal IDs and topic IDs are stored in company-context.md under the
-"Portal Context" section. They are loaded into pm_context.portal_context
-at session start. Do not hardcode these — always read from pm_context.
-REF
-
-# eGain progressive disclosure — additional reference file
-cat > config/skills/egain/references/html-format.md << 'REF'
-# eGain Portal HTML Format
-
-## Supported HTML elements
-
-Portal articles accept these HTML elements:
-  <h2>   — major sections
-  <h3>   — subsections
-  <p>    — body paragraphs
-  <ul>/<li> — bullet lists
-  <ol>/<li> — numbered lists
-  <img src="..."> — images (must be portal-hosted URLs)
-  <a href="..."> — links
-  <strong> — bold text
-  <em> — italic text
-  <code> — inline code
-
-## Image handling
-
-- Images must be uploaded to the eGain portal first
-- NEVER use Aha CDN URLs — they require Aha authentication
-- NEVER use external URLs that may break — download and re-upload
-- Use descriptive alt text for accessibility
-
-## Article structure conventions
-
-- Start with <h2> for the main title/section
-- Use <h3> for subsections within a <h2>
-- Keep paragraphs short — PMs read these on screen
-- Use bullet lists for feature descriptions
-- Include version/release info in the first paragraph
-REF
-
-# Company-context skill
-cat > config/skills/company-context/SKILL.md << 'SKILL'
----
-name: company-context
-description: >
-  PM identity, product ownership, Aha product mappings, eGain portal context,
-  and release cadence rules. Use when determining which products a PM owns,
-  how to fetch releases for a product (AIA tags vs standard), or which portal
-  topics to survey. Trigger on: PM identity, product routing, release type decisions.
 ---
 
-# Company Context Skill
+### Step 3.4 — Portal Articles skill
 
-## What pm_context provides
+Create `config/skills/portal-articles/SKILL.md`:
 
-All fields are parsed from `company-context.md` (S3) at session start and injected into `pm_context`:
+Teaches the agent how to work with the eGain portal. Covers: two-level fetch (summaries
+first, full content on demand), create vs update decision logic, topic hierarchy navigation,
+"Upcoming Features" vs "New Features" naming, missing article summaries handling.
 
-- `pm_context.name` — PM display name (from frontend dropdown)
-- `pm_context.owned_products` — product codes: `["AIA", "ECAI"]`
-- `pm_context.aha_mappings` — per-product: `{aha_product_key, release_field_type, aia_version_prefix}`
-- `pm_context.portal_context` — per-product: `{portal_id, portal_name, topics: [{name, id}]}`
-- `pm_context.release_cadence_rules` — text summary of release rules
-- `pm_context.upcoming_releases` — filtered to this PM's products only
+Create `config/skills/portal-articles/tools.py`:
 
-## How to determine release fetch strategy
+Tool functions that call the eGain API via the shared Lambda:
+- `browse_portal_topic(portal_id, topic_id)` — Level 1: article titles + summaries
+- `read_portal_article(portal_id, article_id)` — Level 2: full HTML content
+- `check_portal_for_release(portal_id, product, version)` — searches for existing release topic
 
-Check `pm_context.aha_mappings[product].release_field_type`:
-- `"aia_version_tag"` → AIA: use `aha_get_release_features(product_key, tag)`
-- `"standard_release"` → ECAI/ECKN/ECAD: use `aha_get_release_features(release_id)`
+---
 
-## Cross-product: ECKN + ECAI
+### Step 3.5 — Context skill (dynamic loading)
 
-ECKN features may have ECAI component dependencies.
-Flag in plan: "Requires ECAI review — Prasanth Sai or Carlos España should review."
+Create `config/skills/context/tools.py`:
 
-## Gotchas
+Tools that load context from company-context.md on demand — the agent calls these
+WHEN it needs context, not upfront. This keeps the system prompt minimal.
 
-- `pm_context` is loaded ONCE at session start — do not try to re-read company-context.md directly
-- `portal_context` is filtered to the PM's owned products only — you won't see portals for products they don't own
-- PM names come from the frontend dropdown, emails come from company-context.md — they're matched by name
-- `upcoming_releases` is also filtered — a PM who owns AIA won't see ECAD releases
+- `get_pm_context(pm_name)` — PM details, owned products, reports-to
+- `get_release_tracking(product_key)` — how releases are tracked for this product (tags vs release IDs)
+- `get_portal_structure()` — full topic hierarchy with IDs
+- `get_document_rules()` — Documents Impacted tag meanings and contradiction rules
 
-See [references/parsing.md](references/parsing.md) for the Markdown table format spec.
-SKILL
+These read from `context/company-context.md` (local in dev, S3 in prod).
 
-cat > config/skills/company-context/references/parsing.md << 'REF'
-# Company Context Parsing Reference
+---
 
-## Markdown table format in company-context.md
+### Step 3.6 — Company Context reference
 
-The PM ownership table uses pipe-delimited Markdown:
-  | PM Name | Email | Owned Products | Role |
+Create `config/skills/company-context/SKILL.md`:
 
-The Aha mappings table:
-  | Product Name | Aha Product Code | Aha URL | Release Type | Notes |
+Developer reference — format specification for company-context.md. NOT loaded by the
+agent. Documents the expected Markdown table structure so developers and the parser
+stay in sync.
 
-AIA rows have Release Type = "Version tag (AIA x.x.x)"
-All others have Release Type = "Standard (YY.MM)"
+---
 
-## PMContext struct fields populated during parsing
+### Step 3.7 — System prompt
 
-  pm_id                — derived from email (before @)
-  name                 — "First Last" from PM Name column
-  owned_products       — split on ", " from Owned Products column
-  aha_mappings         — dict keyed by product code
-    .aha_product_key   — e.g. "AIA", "ECAI"
-    .release_field_type — "aia_version_tag" or "standard_release"
-    .aia_version_prefix — "AIA" for AIA product, None for others
-  portal_context       — per-product dict: {portal_id, portal_name, topics: [{name, id}]}
-  release_cadence_rules — text block from "Release Cadence Rules" section
-  upcoming_releases     — filtered to PM's owned products only
-REF
-```
+Create `prompts/system.txt`:
 
-**Checkpoint 3.8:** `ls config/skills/` shows three folders: `aha/`, `egain/`, `company-context/`. Each has a `SKILL.md`.
+The main agent system prompt. Kept MINIMAL — just PM name, products, and a brief
+description of available skills. All context (release tracking, portal structure,
+Documents Impacted rules) is loaded dynamically by the agent via context tools.
+
+---
+
+**Checkpoint 3.7:** `ls config/skills/` shows five folders: `release-features/`, `feature-search/`,
+`release-notes/`, `portal-articles/`, `context/`, plus `company-context/` (developer reference).
 
 ---
 
@@ -1141,41 +763,46 @@ cat > context/company-context.md << 'CTX'
 
 ## PM to Product Ownership
 
-| PM Name | Email | Owned Products | Role |
-|---|---|---|---|
-| Varsha Thalange | varsha.thalange@egain.com | AIA, ECAI, ECKN, ECAD | PM Manager |
-| Aiushe Mishra | aiushe.mishra@egain.com | AIA | PM — AI Agent |
-| Prasanth Sai | prasanth.sai@egain.com | AIA, ECAI | PM — AI Agent + AI Services |
-| Carlos España | carlos.espana@egain.com | ECAI | PM — AI Services |
-| Ankur Mehta | ankur.mehta@egain.com | ECKN | PM — Knowledge |
-| Peter Huang | peter.huang@egain.com | ECKN | PM — Knowledge |
-| Kevin Dohina | kevin.dohina@egain.com | ECAD | PM — Advisor Desktop |
+| PM Name | Email | Owned Products | Role | Reports To |
+|---|---|---|---|---|
+| Varsha Thalange | varsha.thalange@egain.com | AIA, ECAI, ECKN, ECAD | PM Manager | Ashu Roy (CEO) |
+| Prasanth Sai | prasanth.sai@egain.com | AIA, ECAI | PM — AI Agent + AI Services | Varsha Thalange |
+| Aiushe Mishra | aiushe.mishra@egain.com | AIA | PM — AI Agent | Prasanth Sai |
+| Carlos España | carlos.espana@egain.com | ECAI | PM — AI Services | Prasanth Sai |
+| Ankur Mehta | ankur.mehta@egain.com | ECKN | PM — Knowledge | Varsha Thalange |
+| Peter Huang | peter.huang@egain.com | ECKN | PM — Knowledge | Ankur Mehta |
+| Kevin Dohina | kevin.dohina@egain.com | ECAD | PM — Advisor Desktop | Varsha Thalange |
 
 > Note: ECKN features may have ECAI dependencies. Flag these for Prasanth Sai / Carlos España review.
 
 ---
 
-## Aha Product to Component Mappings
+## Aha Product Mappings
 
-| Product Name | Aha Product Code | Aha URL | Release Type | Notes |
-|---|---|---|---|---|
-| AI Agent | AIA | egain.aha.io/products/AIA | Version tag (AIA x.x.x) | Does NOT use Release field |
-| AI Services | ECAI | egain.aha.io/products/ECAI | Standard (YY.MM) | |
-| Knowledge | ECKN | egain.aha.io/products/ECKN | Standard (YY.MM) | May include cross-listed ECAI features |
-| Advisor Desktop | ECAD | egain.aha.io/products/ECAD | Standard (YY.MM) | |
+| Product Name | Aha Code | Description | Aha URL | Release Tracking | Notes |
+|---|---|---|---|---|---|
+| AI Agent | AIA | Conversational AI agent platform — virtual assistants, agent handoff, conversation flows | egain.aha.io/products/AIA | Version tags (`AIA 1.2.0`) | Does NOT use Release attribute |
+| AI Services | ECAI | AI backend services — Search and Instant Answers (IA) | egain.aha.io/products/ECAI | Release attribute | Format: `ECAI-R-{num} {version}` |
+| Knowledge | ECKN | Knowledge management platform — authoring, publishing, portal | egain.aha.io/products/ECKN | Release attribute | Format: `ECKN-R-{num} {version}` |
+| Advisor Desktop | ECAD | Agent desktop application — case management, customer interaction | egain.aha.io/products/ECAD | Release attribute | Format: `ECAD-R-{num} {version}` |
 
 ---
 
-## Release Cadence Rules
-
-### Standard Products (ECAI, ECKN, ECAD)
-- Release tracked via Aha Release field on each feature
-- Release name format: YY.MM (e.g. 25.03 for March 2025)
+## Release Tracking Rules
 
 ### AIA (AI Agent)
-- Does NOT use the standard Aha Release field
-- Tracked via attribute tags: AIA 1.0.0, AIA 1.2.0, AIA 2.0.0
+- Does NOT use the Aha Release attribute
+- Releases are tracked via version TAGS on features: `AIA 1.0.0`, `AIA 1.2.0`, `AIA 2.0.0`
+- To fetch features for a release: search by tag (e.g. `tag=AIA 1.2.0`)
 - All AIA features: egain.aha.io/products/AIA/feature_cards
+
+### Standard Products (ECAI, ECKN, ECAD)
+- Use the Release ATTRIBUTE on each feature
+- Release string format: `{CODE}-R-{num} {version}`
+  - Example: `ECAI-R-53 21.23.1.0` → actual version is `21.23.1.0`
+  - Example: `ECKN-R-116 21.21.4.0` → actual version is `21.21.4.0`
+- Ignore the prefix (e.g. `ECAI-R-53`) — only use the version number after the space
+- To fetch features: first get the release_id from `aha_list_releases`, then fetch features
 
 ### Cross-product: ECKN + ECAI
 - ECKN features may depend on ECAI components
@@ -1183,9 +810,25 @@ cat > context/company-context.md << 'CTX'
 
 ---
 
-## Documents Impacted — Release Notes Logic
-- Features tagged "release notes" under Documents Impacted → require portal update
-- Each such feature will have a Jira URL in the feature record
+## Documents Impacted Attribute
+
+Every feature in Aha has a `Documents Impacted` custom field. This determines
+what documentation action is needed for that feature.
+
+| Tag Value | Action |
+|---|---|
+| `Release Notes` | Feature must be included in release notes |
+| `User Guides` or `Online Help` | Feature needs a portal article update/create in eGain |
+| `No documentation impact` | Skip — no documentation needed for this feature |
+| *(empty / not set)* | PM has not updated this in Aha — ask PM to set it before proceeding |
+
+**Multiple tags:** A feature can have multiple tags. For example, both `Release Notes`
+and `User Guides` means it needs BOTH release notes AND a portal update.
+
+**Contradiction handling:** If a feature has `No documentation impact` AND another tag
+like `Release Notes` or `User Guides`, this is a contradiction. Flag it to the PM:
+> "Feature '{title}' has contradictory Documents Impacted tags: 'No documentation impact' + '{other tag}'.
+> Please correct this in Aha before proceeding."
 
 ---
 
@@ -1202,44 +845,98 @@ cat > context/company-context.md << 'CTX'
 
 ## eGain Portal Context
 
-### AIA Portal
-- Portal ID: 1001
-- Portal Name: eGain AI Agent Knowledge Portal
+There is ONE shared portal for all products. Currently it has content for
+AI Agent (AIA) and AI Services (ECAI — Search + Instant Answers).
 
-| Topic Name | Topic ID |
+- Portal Short ID: `2ibo79`
+- Article ID pattern: `EASY-{number}` (e.g. `EASY-17468`, `EASY-17368`)
+
+### Portal Topic Hierarchy
+
+```
+Home
+├── AI Agent for Contact Center (308200000003062)
+│   Contains: articles about AI Agent for CC features and guides
+│   ├── Connectors (308200000003123)
+│   │   ├── Channels (308200000003124)
+│   │   └── Customisations (308200000003126)
+│   ├── New Features for AI Agent 1.1.0       ← released features
+│   ├── Upcoming Features for AI Agent 1.2.0  ← unreleased features
+│   └── (more release/upcoming sub-topics per version)
+│
+├── AI Agent for Customers (308200000003063)
+│   Contains: articles about AI Agent for customer-facing use cases
+│   └── (no Connectors/Channels sub-topics yet)
+│
+├── AI Agent for Enterprise (308200000003064)
+│   Contains: articles about AI Agent for enterprise use cases
+│   └── (no Connectors/Channels sub-topics yet)
+│
+├── Search 2.0 (308200000003066)
+│   Contains: articles about Search features and configuration
+│   ├── New Features for Search 21.22.2       ← released features
+│   ├── Upcoming Features for Search ...      ← unreleased features
+│   └── (more release/upcoming sub-topics per version)
+│
+└── Instant Answers (308200000003065)
+    Contains: articles about Instant Answers features and configuration
+    ├── New Features for Instant Answers 21.23.0  ← released features
+    ├── Upcoming Features for Instant Answers ... ← unreleased features
+    └── (more release/upcoming sub-topics per version)
+```
+
+### Topic IDs
+
+| Topic | Topic ID | Product | Notes |
+|---|---|---|---|
+| AI Agent for Contact Center | 308200000003062 | AIA | Articles about AIA CC features + guides. Release features in sub-topics. |
+| Connectors | 308200000003123 | AIA | Sub-topic under AI Agent for CC |
+| Channels | 308200000003124 | AIA | Sub-topic under Connectors — where AI Agent is embedded |
+| Customisations | 308200000003126 | AIA | Sub-topic under Connectors — connector customisations |
+| AI Agent for Customers | 308200000003063 | AIA | No Connectors/Channels sub-topics yet |
+| AI Agent for Enterprise | 308200000003064 | AIA | No Connectors/Channels sub-topics yet |
+| Search 2.0 | 308200000003066 | ECAI | Articles about Search features + config. Release features in sub-topics. |
+| Instant Answers | 308200000003065 | ECAI | Articles about IA features + config. Release features in sub-topics. |
+
+### Portal Navigation Rules
+
+**Routing AI Agent features:**
+- First ask: is this feature for AI Agent for CC, Customers, or Enterprise?
+- Feature guide articles → listed directly under the respective topic
+- Release features → in sub-topics: `New Features for AI Agent {version}` or `Upcoming Features for AI Agent {version}`
+- Connector-related features → under Connectors → Channels or Customisations
+- If no fitting connector sub-topic exists → suggest PM create a new topic
+
+**Routing AI Services features:**
+- Search features → under Search 2.0 topic
+- Instant Answers features → under Instant Answers topic
+- Release features → in sub-topics: `New Features for Search {version}` or `New Features for Instant Answers {version}`
+
+**Release sub-topic naming:**
+- Released: `New Features for {product} {version}`
+- Unreleased: `Upcoming Features for {product} {version}`
+- After release ships: suggest PM rename `Upcoming Features...` → `New Features...`
+
+**Missing topics:**
+- AI Agent for Customers/Enterprise do NOT have Connectors/Channels sub-topics
+- If a connector feature is for Customers or Enterprise → inform PM to create the topic first
+
+### Release Notes Article Format
+
+Articles under `New Features for...` or `Upcoming Features for...` topics:
+
+| Field | Description |
 |---|---|
-| AIA Release Notes | topic_001 |
-| AIA Getting Started | topic_002 |
-| AIA Configuration | topic_003 |
+| Jira Link | Link to the Jira ticket |
+| Overview | Brief description of the feature |
+| Release Notes | The release notes text |
+| Helpdoc update needed? | `Yes` / blank |
+| Which Helpdoc | Name of the help doc article to update |
+| Knowledge Hub Article update needed? | `Yes` / blank |
+| Which KHub Article | Name of the KHub article to update |
 
-### ECAI Portal
-- Portal ID: 1002
-- Portal Name: eGain AI Services Knowledge Portal
-
-| Topic Name | Topic ID |
-|---|---|
-| ECAI Release Notes | topic_010 |
-| ECAI Admin Guide | topic_011 |
-| ECAI API Reference | topic_012 |
-
-### ECKN Portal
-- Portal ID: 1003
-- Portal Name: eGain Knowledge Product Portal
-
-| Topic Name | Topic ID |
-|---|---|
-| ECKN Release Notes | topic_020 |
-| ECKN Admin Guide | topic_021 |
-| ECKN API Reference | topic_022 |
-
-### ECAD Portal
-- Portal ID: 1004
-- Portal Name: eGain Advisor Desktop Knowledge Portal
-
-| Topic Name | Topic ID |
-|---|---|
-| ECAD Release Notes | topic_030 |
-| ECAD Admin Guide | topic_031 |
+The `Helpdoc update needed?` and `Which Helpdoc` fields signal which OTHER
+portal articles may also need updating for this feature.
 CTX
 ```
 
@@ -1254,132 +951,100 @@ Create `services/orchestration/session/models.py`:
 ```python
 """
 services/orchestration/session/models.py
+
 All Pydantic models for session state and domain objects.
-PMAgentState is the only model serialised to Redis — it contains no credentials.
-AgentDeps is runtime-only and reconstructed per turn.
+PMAgentState is the session state — serialised to Redis between PM messages.
+It is also the only model serialised to Redis — it contains no credentials.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
+
 from pydantic import BaseModel
 
 
+# ── Company context models (parsed from company-context.md) ──────────────────
+
 class AhaMapping(BaseModel):
-    product:              str
-    aha_product_key:      str
-    release_field_type:   str   # "aia_version_tag" | "standard_release"
-    aia_version_prefix:   str | None = None  # "AIA" for AIA product, None otherwise
-    shipped_tag:          str | None = None
+    """Per-product Aha configuration."""
+    product: str                        # "AI Agent", "AI Services", etc.
+    aha_product_key: str                # "AIA", "ECAI", "ECKN", "ECAD"
+    release_field_type: str             # "aia_version_tag" | "standard_release"
+    aia_version_prefix: str | None = None  # "AIA" for AIA product, None otherwise
+
+
+class PortalTopic(BaseModel):
+    """A topic in the eGain portal hierarchy."""
+    name: str
+    topic_id: str
+    product: str | None = None          # which product this topic belongs to
+    notes: str | None = None
+
+
+class PortalContext(BaseModel):
+    """Shared portal configuration — one portal for all products."""
+    portal_short_id: str                # "2ibo79"
+    topics: list[PortalTopic] = []      # flat list of all topics with IDs
 
 
 class PMContext(BaseModel):
-    pm_id:                  str
-    name:                   str
-    owned_products:         list[str]
-    aha_mappings:           dict[str, AhaMapping]
-    portal_context:         dict[str, dict]       # product → {portal_id, portal_name, topics: [{name, id}]}
-    release_cadence_rules:  str
-    upcoming_releases:      list[dict[str, Any]]
+    """Parsed from company-context.md at session start. Read-only during session."""
+    pm_id: str                          # derived from email (before @)
+    name: str
+    email: str
+    owned_products: list[str]           # ["AIA", "ECAI"]
+    reports_to: str | None = None
+    aha_mappings: dict[str, AhaMapping]  # product_code → AhaMapping
+    portal_context: PortalContext
+    release_cadence_rules: str = ""
+    documents_impacted_rules: str = ""  # Documents Impacted tag meanings (injected into prompts)
 
 
-class ArticlePlan(BaseModel):
-    title:           str
-    article_id:      str | None = None   # None for creates
-    folder_id:       str | None = None   # None for updates (already placed)
-    folder_name:     str | None = None
-    planned_changes: str
-    refined_content: str | None = None
-    jira_url:        str | None = None
-    confirmed:       bool = False
-
-    def is_update(self) -> bool:
-        return self.article_id is not None
-
-    def is_create(self) -> bool:
-        return self.article_id is None
-
-
-class IteratorState(BaseModel):
-    articles:           list[ArticlePlan] = []
-    current_index:      int = 0
-    confirmed_articles: list[ArticlePlan] = []
-
-    def is_done(self) -> bool:
-        return self.current_index >= len(self.articles)
-
-    def current_article(self) -> ArticlePlan:
-        if self.is_done():
-            raise IndexError("Iterator is done — no current article")
-        return self.articles[self.current_index]
-
-
-class DocumentPlan(BaseModel):
-    articles_to_update: list[ArticlePlan] = []
-    articles_to_create: list[ArticlePlan] = []
-    rationale:          str = ""
-
+# ── Audit models ─────────────────────────────────────────────────────────────
 
 class ToolCallRecord(BaseModel):
     """Recorded per tool call — full response is never stored."""
-    tool_name:  str
-    params:     dict
-    timestamp:  str                          # ISO 8601
-    result:     str = "tool response received"
+    tool_name: str
+    params: dict
+    timestamp: str                      # ISO 8601
+    result: str = "tool response received"
 
-class NodeTransition(BaseModel):
-    node:       str
-    timestamp:  str                          # ISO 8601
 
+# ── Session state (Redis) ─────────────────────────────────────────────────────
 
 class PMAgentState(BaseModel):
     """
-    The only model serialised to Redis. Contains NO credentials, NO raw context text.
-    AgentDeps is reconstructed each turn from this state.
+    Session state — serialised to Redis between PM messages.
+    Contains NO credentials. The agent tracks everything else
+    in its conversation history (message_history).
     """
-    session_id:     str
-    pm_name:        str                      # from frontend dropdown
-    pm_context:     PMContext | None = None
-    release_id:     str | None = None
-    release_label:  str | None = None
-    aha_specs:      list[dict] | None = None
-    portal_articles:list[dict] | None = None
-    plan:           DocumentPlan | None = None
-    plan_feedback:  str | None = None
-    plan_feedback_history: list[str] = []
-    mode:           str = "unknown"      # "release" | "adhoc" | "unknown"
-    mode_order:     list[str] = []       # ["updates","creates"] or ["creates","updates"]
-    update_iterator: IteratorState = IteratorState()
-    create_iterator: IteratorState = IteratorState()
-    pm_input:       str | None = None
-    adhoc_intent:   str | None = None    # "update" | "create"
-    adhoc_query:    str | None = None
-    current_node:   str = "EntryNode"
-    last_message:   str = ""                     # last message to show PM (set by nodes)
-    output_feedback: str | None = None           # feedback from OutputReviewNode
-    # ── Compaction state ──────────────────────────────────────────────────────
-    message_history:  list = []                   # pydantic-ai ModelMessage list (agent conversation)
-    total_chars:      int = 0                     # total chars across all message parts (updated after each node)
-    compaction_count: int = 0                     # number of times compaction has run this session
-    compacted_summary: str | None = None          # last compaction summary (for debugging)
-    # ── Audit ─────────────────────────────────────────────────────────────────
-    tool_calls:     list[ToolCallRecord] = []    # accumulated during session
-    node_transitions: list[NodeTransition] = []  # accumulated during session
-    start_time:     str | None = None            # ISO 8601
+    session_id: str
+    pm_name: str                        # from frontend dropdown
+    pm_context: PMContext | None = None
 
+    # ── Conversation ──────────────────────────────────────────────────────
+    message_history: list = []          # pydantic-ai ModelMessage list
+    total_chars: int = 0                # for compaction trigger
+    compaction_count: int = 0
+    compacted_summary: str | None = None
+
+    # ── Audit ─────────────────────────────────────────────────────────────
+    tool_calls: list[ToolCallRecord] = []
+    start_time: str | None = None       # ISO 8601
+
+
+# ── Session history (DynamoDB) ───────────────────────────────────────────────
 
 class SessionRecord(BaseModel):
-    """Written to DynamoDB (pmm-agent-sessions) once at session end. Never updated."""
-    session_id:        str                   # partition key
-    pm_name:           str
-    pm_email:          str
-    mode:              str
-    release_label:     str | None = None
-    start_time:        str
-    end_time:          str
-    status:            str                   # "completed" | "restarted"
-    tool_calls:        list[ToolCallRecord] = []
-    node_transitions:  list[NodeTransition] = []
+    """Written to DynamoDB once at session end. Never updated."""
+    session_id: str                     # partition key
+    pm_name: str
+    pm_email: str
+    start_time: str
+    end_time: str
+    status: str                         # "completed" | "restarted"
+    tool_calls: list[ToolCallRecord] = []
+
 ```
 
 **Checkpoint 4.2:** `python -c "from services.orchestration.session.models import PMAgentState; s=PMAgentState(session_id='test'); print(s.model_dump_json()[:80])"` prints JSON without error.
@@ -1639,17 +1304,19 @@ sys.path.insert(0, "services/orchestration")
 
 # Test skill loader
 from context_loader.skill_loader import load_skill_md
-skill = load_skill_md("aha")
-assert "aha_get_release_features" in skill, "SKILL.md missing tool reference"
-assert "AIA" in skill, "SKILL.md missing AIA logic"
+skill = load_skill_md("release-features")
+assert len(skill) > 0, "release-features SKILL.md not found"
 print("✓ skill_loader OK")
 
 # Test tools.py imports
-from config.skills.aha.tools import AHA_TOOLS
-from config.skills.egain.tools import EGAIN_TOOLS
-assert len(AHA_TOOLS) == 4
-assert len(EGAIN_TOOLS) == 2
-print("✓ tools.py OK")
+from config.skills.release_features.tools import RELEASE_FEATURES_TOOLS
+from config.skills.portal_articles.tools import PORTAL_ARTICLES_TOOLS
+from config.skills.feature_search.tools import FEATURE_SEARCH_TOOLS
+from config.skills.context.tools import CONTEXT_TOOLS
+print(f"✓ release-features: {len(RELEASE_FEATURES_TOOLS)} tools")
+print(f"✓ portal-articles: {len(PORTAL_ARTICLES_TOOLS)} tools")
+print(f"✓ feature-search: {len(FEATURE_SEARCH_TOOLS)} tools")
+print(f"✓ context: {len(CONTEXT_TOOLS)} tools")
 
 print("All context loader checks passed")
 EOF
@@ -1657,35 +1324,27 @@ EOF
 
 ---
 
-### Step 4.4 — Tool imports (no registry needed)
+### Step 4.4 — Tool registration on the agent
 
-Tools are defined as plain Python functions in each skill's `tools.py` (created in Steps 3.2 and 3.6). Agent nodes import them directly — no registry layer needed.
+All tool functions from all skills are registered on ONE agent. Each skill's `tools.py` exports a `*_TOOLS` list. The agent gets all tools at creation:
 
 ```python
-# In agent node files, tools are imported directly:
-from config.skills.aha.tools import AHA_TOOLS
-from config.skills.egain.tools import EGAIN_TOOLS
+from config.skills.release_features.tools import RELEASE_FEATURES_TOOLS
+from config.skills.feature_search.tools import FEATURE_SEARCH_TOOLS
+from config.skills.portal_articles.tools import PORTAL_ARTICLES_TOOLS
+from config.skills.context.tools import CONTEXT_TOOLS
 
-# Pass tools at Agent creation time:
-agent = Agent(deps_type=AgentDeps, result_type=..., tools=AHA_TOOLS)
+ALL_TOOLS = (
+    RELEASE_FEATURES_TOOLS
+    + FEATURE_SEARCH_TOOLS
+    + PORTAL_ARTICLES_TOOLS
+    + CONTEXT_TOOLS
+)
+
+agent = Agent(deps_type=AgentDeps, tools=ALL_TOOLS)
 ```
 
-There is no `services/orchestration/tools/registry.py` file. Each tool function in `tools.py` already has the right signature (`ctx: RunContext` + typed params) and docstring (used as the tool description by PydanticAI). The `AHA_TOOLS` and `EGAIN_TOOLS` lists export all functions for that skill.
-
-**Checkpoint 4.4:**
-
-```bash
-python3 - << 'EOF'
-import sys
-sys.path.insert(0, "services/orchestration")
-from config.skills.aha.tools import AHA_TOOLS
-from config.skills.egain.tools import EGAIN_TOOLS
-print(f"Aha tools: {[t.__name__ for t in AHA_TOOLS]}")
-print(f"eGain tools: {[t.__name__ for t in EGAIN_TOOLS]}")
-EOF
-```
-
-Should print 6 tool names for each.
+Each tool function has typed params (Pydantic validates) and a docstring (the LLM sees this as the tool description).
 
 ---
 
@@ -1693,12 +1352,13 @@ Should print 6 tool names for each.
 
 Create `services/orchestration/tools/deps.py`:
 
-First create `services/orchestration/config.py` — this is where LLM provider config lives:
+First create `services/orchestration/settings.py` — this is where LLM provider config lives:
 
 ```python
 """
-services/orchestration/config.py
-LLM provider configuration and app settings.
+services/orchestration/settings.py
+
+LLM provider configuration, compaction thresholds, and app settings.
 Change DEFAULT_PROVIDER to switch all agent nodes — no code changes needed.
 """
 from __future__ import annotations
@@ -1740,8 +1400,6 @@ DEFAULT_MODEL_SETTINGS = {
 # ── Context Window & Compaction ──────────────────────────────────────────────
 
 # Context window budget: 480,000 chars ≈ 120,000 tokens (4 chars/token avg)
-# Gemini Flash has 1M token context, but we cap at 120k to leave room for
-# output and to keep costs/latency manageable.
 CONTEXT_WINDOW_CHARS = 480_000
 
 # Compaction triggers at 90% of context window (432,000 chars ≈ 108k tokens)
@@ -1749,32 +1407,26 @@ COMPACTION_TRIGGER_RATIO = 0.90
 COMPACTION_TRIGGER_CHARS = int(CONTEXT_WINDOW_CHARS * COMPACTION_TRIGGER_RATIO)
 
 # Max tokens for the compaction summary: up to 12,000 tokens (48,000 chars)
-# The summary should be as concise as possible — 12k is the ceiling, not a target.
-# After compaction: message_history = [summary] + [last turn]
-# This occupies ~10% of context (48k chars) + last turn, leaving ~90% free.
 COMPACTION_MAX_TOKENS = 12_000
 COMPACTION_MAX_CHARS = COMPACTION_MAX_TOKENS * 4  # 48,000 chars ≈ 10% of context
 
-# Number of recent conversation turns to protect from compaction.
-# Only the last turn is kept verbatim — everything else is summarized.
+# Only the last turn is kept verbatim — everything else is summarized
 PROTECTED_TAIL_TURNS = 1
 
 # Max chars for a single tool response before it's capped
-# Prevents one large API response from blowing the context window
 MAX_TOOL_RESPONSE_CHARS = 60_000
-
-# Prompts are loaded via context_loader/prompt_loader.py from the prompts/ folder.
-# No path config needed — load_prompt("COMPACTION_PROMPT") finds prompts/COMPACTION_PROMPT.txt
 
 # ── App Settings ─────────────────────────────────────────────────────────────
 
 APP_ENV = os.getenv("APP_ENV", "local")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "debug")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-CONTEXT_BUCKET = os.getenv("CONTEXT_BUCKET", "egain-pmm-agent-context-dev")
-AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+DYNAMODB_ENDPOINT = os.getenv("DYNAMODB_ENDPOINT", "http://localhost:8042")
+CONTEXT_BUCKET = os.getenv("CONTEXT_BUCKET", "egain-pmm-agent-context-066148154898")
+AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION", "us-west-2")
 FRONTEND_ORIGIN_DEV = os.getenv("FRONTEND_ORIGIN_DEV", "http://localhost:3000")
 FRONTEND_ORIGIN_PROD = os.getenv("FRONTEND_ORIGIN_PROD", "https://pmm-agent.egain.com")
+
 ```
 
 Now create `services/orchestration/tools/deps.py`:
@@ -1782,8 +1434,12 @@ Now create `services/orchestration/tools/deps.py`:
 ```python
 """
 services/orchestration/tools/deps.py
-AgentDeps: runtime dependency container for PydanticAI agents.
-Never serialised to Redis. Reconstructed each turn from PMAgentState.
+
+AgentDeps: runtime dependency container for the PMM AI Agent.
+Never serialised to Redis. Reconstructed each HTTP request from PMAgentState + config.
+
+Passed to agent via: agent.run(prompt, deps=agent_deps)
+Accessed in tools via: ctx.deps.lambda_client, ctx.deps.pm_context, etc.
 """
 from __future__ import annotations
 
@@ -1793,19 +1449,27 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 import boto3
-from openai import AsyncOpenAI
 from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.providers.openai import OpenAIProvider
 
-from config import PROVIDERS, DEFAULT_PROVIDER, DEFAULT_MODEL_SETTINGS
+from settings import PROVIDERS, DEFAULT_PROVIDER, DEFAULT_MODEL_SETTINGS, APP_ENV
 from session.models import PMContext
 
 
 class LambdaClient:
-    """Thin wrapper around boto3 Lambda client for invoking skill Lambdas."""
+    """Thin wrapper around boto3 Lambda client for invoking skill Lambdas.
+    One instance shared across all sessions (process-level singleton).
+    """
     def __init__(self):
-        self._client = boto3.client("lambda", region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
+        self._client = boto3.client(
+            "lambda",
+            region_name=os.environ.get("AWS_DEFAULT_REGION", "us-west-2"),
+        )
 
     async def invoke_skill_lambda(self, lambda_name: str, payload: dict) -> dict:
+        """Invoke the pmm-skill-client Lambda synchronously (via thread pool).
+        Returns the parsed response body. Raises on non-200 status.
+        """
         import asyncio
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(
@@ -1825,39 +1489,39 @@ class LambdaClient:
 @dataclass
 class AgentDeps:
     """
-    Injected into every agent node via RunContext[AgentDeps].
-    - lambda_client:  shared boto3 Lambda invoker — stateless, no API credentials
+    Injected into the PMM AI Agent via RunContext[AgentDeps].
+    All tool functions access this via ctx.deps.
+
+    - lambda_client:  invokes skill Lambdas (Aha, eGain API calls)
     - llm_model:      PydanticAI OpenAIModel configured from PROVIDERS
     - model_settings: {"extra_body": {"reasoning_effort": "low"}}
-    - session_id:     used for session tracking and DynamoDB history
-    - pm_context:     parsed PMContext struct, not raw text
-    - aha_skill:      SKILL.md content for Aha tools
-    - egain_skill:    SKILL.md content for eGain tools
+    - pm_context:     parsed PM data from company-context.md
+    - session_id:     for session tracking and DynamoDB history
     """
-    lambda_client:  LambdaClient
-    llm_model:      OpenAIModel
+    lambda_client: LambdaClient
+    llm_model: OpenAIModel
     model_settings: dict
-    pm_context:     PMContext
-    session_id:     str
-    release_label:  str | None
-    aha_skill:      str
-    egain_skill:    str
+    pm_context: PMContext
+    session_id: str
 
 
-# ── Process-level singletons ──────────────────────────────────────────────────
+# ── Process-level singletons ─────────────────────────────────────────────────
 
 @lru_cache(maxsize=1)
 def _get_lambda_client() -> LambdaClient:
+    """One LambdaClient for the entire process. Stateless."""
     return LambdaClient()
 
 
 @lru_cache(maxsize=1)
 def _get_llm_model() -> OpenAIModel:
-    """Build PydanticAI OpenAIModel from the configured provider."""
+    """Build PydanticAI OpenAIModel from the configured provider.
+    Cached — one model instance for all sessions.
+    """
     provider = PROVIDERS[DEFAULT_PROVIDER]
     api_key = _resolve_llm_api_key(provider)
-    client = AsyncOpenAI(base_url=provider["base_url"], api_key=api_key)
-    return OpenAIModel(provider["model"], openai_client=client)
+    openai_provider = OpenAIProvider(base_url=provider["base_url"], api_key=api_key)
+    return OpenAIModel(provider["model"], provider=openai_provider)
 
 
 def _resolve_llm_api_key(provider: dict) -> str:
@@ -1865,35 +1529,34 @@ def _resolve_llm_api_key(provider: dict) -> str:
     override = os.getenv(provider["api_key_env"])
     if override:
         return override
-    sm = boto3.client("secretsmanager", region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
-    secret = json.loads(sm.get_secret_value(SecretId=provider["credentials_secret"])["SecretString"])
+
+    sm = boto3.client(
+        "secretsmanager",
+        region_name=os.environ.get("AWS_DEFAULT_REGION", "us-west-2"),
+    )
+    secret = json.loads(
+        sm.get_secret_value(SecretId=provider["credentials_secret"])["SecretString"]
+    )
     return secret["api_key"]
 
 
-@lru_cache(maxsize=None)
-def _get_skill_md(skill_name: str) -> str:
-    from context_loader.skill_loader import load_skill_md
-    return load_skill_md(skill_name)
-
-
-# ── Per-session factory ───────────────────────────────────────────────────────
+# ── Per-session factory ──────────────────────────────────────────────────────
 
 def build_deps(
-    pm_context:    PMContext,
-    session_id:    str,
-    release_label: str | None = None,
+    pm_context: PMContext,
+    session_id: str,
 ) -> AgentDeps:
-    """Build AgentDeps for one session turn."""
+    """Build AgentDeps for one session turn.
+    Called by FastAPI endpoints before running the agent.
+    """
     return AgentDeps(
         lambda_client=_get_lambda_client(),
         llm_model=_get_llm_model(),
         model_settings=DEFAULT_MODEL_SETTINGS,
         pm_context=pm_context,
         session_id=session_id,
-        release_label=release_label,
-        aha_skill=_get_skill_md("aha"),
-        egain_skill=_get_skill_md("egain"),
     )
+
 ```
 
 **Checkpoint 4.5:**
@@ -2036,9 +1699,8 @@ async def save_session_record(state: PMAgentState, status: str) -> None:
         end_time=datetime.utcnow().isoformat(),
         status=status,
         tool_calls=state.tool_calls,
-        node_transitions=state.node_transitions,
     )
-    ddb = boto3.resource("dynamodb", region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
+    ddb = boto3.resource("dynamodb", region_name=os.environ.get("AWS_DEFAULT_REGION", "us-west-2"))
     table = ddb.Table(TABLE_NAME)
     table.put_item(Item=record.model_dump())
 ```
@@ -2049,13 +1711,12 @@ async def save_session_record(state: PMAgentState, status: str) -> None:
 python3 - << 'EOF'
 import sys
 sys.path.insert(0, "services/orchestration")
-from session.models import SessionRecord, ToolCallRecord, NodeTransition
+from session.models import SessionRecord, ToolCallRecord
 r = SessionRecord(
     session_id="test-001", pm_name="Prasanth Sai", pm_email="prasanth.sai@egain.com",
     mode="release", start_time="2026-03-18T10:00:00", end_time="2026-03-18T11:00:00",
     status="completed",
     tool_calls=[ToolCallRecord(tool_name="aha_get_release_features", params={"product_key":"AIA"}, timestamp="2026-03-18T10:05:00")],
-    node_transitions=[NodeTransition(node="EntryNode", timestamp="2026-03-18T10:00:00")],
 )
 print(f"✓ SessionRecord: {r.session_id}, {len(r.tool_calls)} tool calls, status={r.status}")
 EOF
@@ -2343,18 +2004,17 @@ HARD LIMIT: Your summary MUST NOT exceed 48,000 characters (~12,000 tokens).
 **Where compaction is called:** In the FastAPI `/sessions/{id}/respond` endpoint, BEFORE resuming the graph:
 
 ```python
-# In the respond endpoint, after loading state and before Graph.iter():
+# In the respond endpoint, after loading state and before running the agent:
 from compaction import maybe_compact
 await maybe_compact(state, deps.llm_model)
 ```
 
-**Where `total_chars` is updated:** In each `BaseNode.run()` method, after calling an LLM agent:
+**Where `total_chars` is updated:** After each `agent.run()` call in the FastAPI endpoint:
 
 ```python
-# Inside any BaseNode.run() that calls an LLM agent:
-result = await some_agent.run(prompt, deps=ctx.deps, ...)
-ctx.state.message_history = list(result.all_messages())
-ctx.state.total_chars = count_message_chars(ctx.state.message_history)
+result = await agent.run(pm_input, message_history=state.message_history, deps=deps)
+state.message_history = list(result.all_messages())
+state.total_chars = count_message_chars(state.message_history)
 ```
 
 **Where tool responses are capped:** In each tool function in `tools.py`:
@@ -2396,7 +2056,368 @@ EOF
 
 ---
 
-## Section 5 — Graph Nodes
+## Section 5 — Agent + Tools
+
+### 5.0 — Architecture overview
+
+This is a **single-agent architecture**. One PydanticAI `Agent` with tools has a multi-turn conversation with the PM. The agent decides what to do based on the conversation — no hardcoded graph or node transitions.
+
+```
+┌──────────────────────────────────────────────────┐
+│              PMM AI Agent (one agent)             │
+│                                                   │
+│  System prompt:                                   │
+│    prompts/system.txt                             │
+│    + company-context (pm_context)                 │
+│    + SKILL.md files (aha, egain)                  │
+│                                                   │
+│  Tools:                                           │
+│    Aha:                                           │
+│      aha_list_releases()        ← find release ID │
+│      aha_get_release_features() ← Level 1 list    │
+│      aha_get_feature_detail()   ← Level 2 full    │
+│      aha_search_features()      ← keyword search   │
+│      aha_get_components()       ← component tree   │
+│    eGain:                                         │
+│      egain_get_articles_in_topic() ← Level 1      │
+│      egain_get_article_by_id()     ← Level 2      │
+│    HITL:                                          │
+│      ask_pm()  ← pauses, returns response to PM   │
+│                                                   │
+│  Conversation: message_history (Redis)            │
+│  Compaction: when history > 432k chars            │
+└──────────────────────────────────────────────────┘
+```
+
+### How it works
+
+Each PM message = one `agent.run()` call with `message_history`:
+
+```
+Turn 1:  PM: "Hi, I want to create release notes for AIA 1.2.0"
+         Agent calls: aha_get_release_features(product_key="AIA", tag="AIA 1.2.0")
+         Agent responds: "Here are 5 features for AIA 1.2.0: [list]. Which do you want to include?"
+
+Turn 2:  PM: "All except feature 3"
+         Agent responds: "Got it. Here are the release notes for Feature 1:
+         ## Overview
+         Introduces a Sync Now button...
+         ## Release Notes
+         Administrators can now manually sync...
+
+         Does this look good?"
+
+Turn 3:  PM: "Change the overview to mention URL sources"
+         Agent responds: "Updated:
+         ## Overview
+         Introduces a Sync Now button for URL-based knowledge sources...
+
+         Approve?"
+
+Turn 4:  PM: "Yes. Next feature."
+         Agent responds: "Release notes for Feature 2: ..."
+
+...continues until all features are done...
+
+Turn N:  PM: "Now update these in the portal"
+         Agent calls: egain_get_articles_in_topic(portal_id, topic_id)
+         Agent responds: "I found 'Upcoming Features for AI Agent 1.2.0' topic.
+         I'll suggest adding each article under it. Here's article 1..."
+```
+
+The agent decides the flow. Not the code.
+
+### Tools
+
+```mermaid
+graph LR
+    subgraph Aha["Aha API Tools"]
+        A1["aha_list_releases<br/>Find release IDs"]
+        A2["aha_get_release_features<br/>Level 1: titles + Jira + tags"]
+        A3["aha_get_feature_detail<br/>Level 2: full content"]
+        A4["aha_search_features<br/>Keyword search"]
+        A5["aha_get_components<br/>Component tree"]
+    end
+
+    subgraph eGain["eGain Portal Tools"]
+        E1["egain_get_articles_in_topic<br/>Level 1: titles + summaries"]
+        E2["egain_get_article_by_id<br/>Level 2: full HTML content"]
+    end
+
+    subgraph HITL["HITL"]
+        H1["ask_pm<br/>Ask PM a question<br/>Pauses agent, waits for reply"]
+    end
+
+    Agent["PMM AI Agent"] --> A1 & A2 & A3 & A4 & A5
+    Agent --> E1 & E2
+    Agent --> H1
+
+    style Aha fill:#FDF2F8,stroke:#DB2777
+    style eGain fill:#EFF6FF,stroke:#2563EB
+    style HITL fill:#FEF3C7,stroke:#D97706
+```
+
+### What the agent handles (LLM reasoning, not tools)
+
+These are NOT separate tools — they're what the agent does with its reasoning:
+
+- **Generate release notes** in the article format (Jira Link, Overview, Release Notes, Helpdoc needed)
+- **Generate article update suggestions** in Markdown
+- **Decide create vs update** by comparing features to portal article titles + summaries
+- **Suggest topic names** for new topics when none match
+- **Flag contradictions** in Documents Impacted tags
+- **Suggest renaming** "Upcoming Features..." → "New Features..." after release ships
+- **Search features** by vague name — ask PM for release to narrow, show top 7 with Aha links
+
+### PM actions the agent supports
+
+| PM says | Agent does |
+|---|---|
+| "Create release notes for AIA 1.2.0" | Fetch features → generate release notes per feature (one at a time) → PM reviews each |
+| "Update portal for AIA 1.2.0" | Fetch features → check Documents Impacted → for "User Guides": find matching articles, suggest updates. For "Release Notes": create under release topic |
+| "Now put these in the portal" | Check portal for existing release topic → suggest update or create + topic |
+| "Find the sync now feature" | Ask PM for release → search Aha → show top matches with links |
+| "Ignore feature 3" | Remove from working set, continue with rest |
+| "Change the overview to mention..." | Update the release notes content for that feature |
+| "What about ECAI features?" | PM doesn't own ECAI? → refuse. Owns it? → fetch ECAI features |
+
+### HITL — `ask_pm()` tool
+
+Instead of hardcoded HITL gates, the agent has an `ask_pm()` tool. But in practice, HITL happens naturally through the conversation:
+
+1. Agent generates a response (feature list, release notes, suggestion)
+2. Response is returned to PM via HTTP
+3. PM replies with approval, edits, or new request
+4. Agent continues with `message_history` from previous turns
+
+The `ask_pm()` tool is for when the agent needs to explicitly ask a structured question (e.g., "Which of these 3 options do you prefer?"). Most HITL is just conversation.
+
+### Session state
+
+`PMAgentState` simplifies dramatically:
+
+```python
+class PMAgentState(BaseModel):
+    session_id: str
+    pm_name: str
+    pm_context: PMContext | None = None
+    message_history: list = []          # pydantic-ai ModelMessage list
+    total_chars: int = 0                # for compaction trigger
+    compaction_count: int = 0
+    compacted_summary: str | None = None
+    tool_calls: list[ToolCallRecord] = []
+    start_time: str | None = None
+```
+
+No more: `plan`, `plan_feedback`, `mode`, `mode_order`, `update_iterator`, `create_iterator`, `current_node`, `last_message`, `output_feedback`, `adhoc_intent`. The agent tracks all of this in its conversation history.
+
+### FastAPI flow
+
+```python
+@app.post("/sessions/start")
+async def start_session(req: StartRequest):
+    pm_context = load_company_context(req.pm_name)
+    state = PMAgentState(session_id=str(uuid4()), pm_name=req.pm_name, pm_context=pm_context)
+
+    result = await agent.run(
+        "PM has started a new session.",
+        deps=build_deps(pm_context, state.session_id),
+    )
+    state.message_history = list(result.all_messages())
+    state.total_chars = count_message_chars(state.message_history)
+    await session_manager.save(state.session_id, state)
+
+    return {"session_id": state.session_id, "message": result.output}
+
+
+@app.post("/sessions/{session_id}/respond")
+async def respond(session_id: str, req: RespondRequest):
+    state = await session_manager.get(session_id)
+
+    # Compaction check before next turn
+    await maybe_compact(state, deps.llm_model)
+
+    result = await agent.run(
+        req.input,
+        message_history=state.message_history,
+        deps=build_deps(state.pm_context, session_id),
+    )
+    state.message_history = list(result.all_messages())
+    state.total_chars = count_message_chars(state.message_history)
+    await session_manager.save(session_id, state)
+
+    return {"message": result.output}
+```
+
+That's it. Two endpoints. No graph, no dispatch, no node routing.
+
+### Adding new capabilities later
+
+| Capability | What to add | What changes |
+|---|---|---|
+| Mailchimp emails | `config/skills/mailchimp/` + `mailchimp_tools.py` + update system prompt | Zero structural changes |
+| Slack posts | `config/skills/slack/` + `slack_tools.py` + update system prompt | Zero structural changes |
+| Jira context | `config/skills/jira/` + `jira_tools.py` + update system prompt | Zero structural changes |
+
+Each new capability = new skill folder + register tools on the agent. The agent learns when to use them from the SKILL.md instructions.
+
+### Checkpoint 5.0
+
+Review the architecture above. Key questions to confirm:
+- One agent, conversation-based — no graph ✓
+- Tools are API wrappers (Aha, eGain) ✓
+- HITL is natural conversation — agent responds, PM replies ✓
+- Agent generates content inline (release notes, suggestions) — not via tools ✓
+- Adding new skills = new folder + tools + system prompt update ✓
+
+```mermaid
+graph TD
+    PM["PM (via chat widget)"]
+    Agent["PMM AI Agent<br/>🧠 One Agent<br/>System prompt + Skills + Tools"]
+
+    PM -->|"message"| Agent
+    Agent -->|"response / question"| PM
+
+    subgraph Tools["Agent's Tools"]
+        subgraph AhaTools["Aha Tools"]
+            A1["aha_list_releases"]
+            A2["aha_get_release_features<br/>Level 1: titles + Jira + tags"]
+            A3["aha_get_feature_detail<br/>Level 2: full content"]
+            A4["aha_search_features<br/>Keyword search"]
+            A5["aha_get_components"]
+        end
+
+        subgraph EgainTools["eGain Portal Tools"]
+            E1["egain_get_articles_in_topic<br/>Level 1: titles + summaries"]
+            E2["egain_get_article_by_id<br/>Level 2: full HTML"]
+        end
+    end
+
+    subgraph Context["Injected at session start"]
+        C1["pm_context<br/>from company-context.md"]
+        C2["Aha SKILL.md"]
+        C3["eGain SKILL.md"]
+    end
+
+    Agent --> AhaTools
+    Agent --> EgainTools
+    Context -.->|"system prompt"| Agent
+
+    subgraph Infra["Infrastructure"]
+        Lambda["pmm-skill-client<br/>Lambda"]
+        Redis["Redis<br/>session state"]
+        DDB["DynamoDB<br/>session history"]
+    end
+
+    AhaTools -->|"invoke"| Lambda
+    EgainTools -->|"invoke"| Lambda
+    Agent -.->|"save/load"| Redis
+    Agent -.->|"session end"| DDB
+
+    style Agent fill:#EFF6FF,stroke:#2563EB
+    style AhaTools fill:#FDF2F8,stroke:#DB2777
+    style EgainTools fill:#FDF2F8,stroke:#DB2777
+    style Context fill:#F0FDF4,stroke:#16A34A
+```
+
+### How the agent uses tools — example conversation
+
+```
+PM: "Create release notes for AIA 1.2.0"
+Agent: calls aha_get_release_features(product_key="AIA", tag="AIA 1.2.0")
+Agent: "Here are 5 features for AIA 1.2.0:
+        1. Sync Now Button (AIA-42) — Documents Impacted: Release Notes, User Guides
+        2. Agent Handoff v2 (AIA-43) — Documents Impacted: Release Notes
+        3. Conversation Memory (AIA-44) — Documents Impacted: No documentation impact
+        4. Widget Dark Mode (AIA-45) — Documents Impacted: (empty)
+        5. Billing Fix (AIA-46) — Documents Impacted: No documentation impact
+
+        ⚠️ Feature 4 has no Documents Impacted — please update in Aha.
+        Features 3 and 5 marked 'No documentation impact' — I'll skip those.
+        Which features do you want release notes for?"
+
+PM: "1, 2. And ignore 4 for now."
+Agent: calls aha_get_feature_detail(feature_id="AIA-42")
+Agent: "Release notes for Feature 1 — Sync Now Button:
+
+        | Field | Value |
+        |---|---|
+        | Jira Link | https://beetle.egain.com/browse/EGS-88109 |
+        | Overview | Introduces a Sync Now button for URL-based knowledge sources... |
+        | Release Notes | Administrators can now manually sync URL-based knowledge sources... |
+        | Helpdoc update needed? | Yes |
+        | Which Helpdoc | AI agent knowledge source configuration |
+
+        Does this look good?"
+
+PM: "Change overview to mention it's for AI agents specifically"
+Agent: "Updated:
+        | Overview | Introduces a Sync Now button for AI agent URL-based knowledge sources... |
+
+        Approve?"
+
+PM: "Yes. Next."
+Agent: calls aha_get_feature_detail(feature_id="AIA-43")
+Agent: "Release notes for Feature 2 — Agent Handoff v2: ..."
+
+...PM approves all release notes...
+
+PM: "Now update these in the portal"
+Agent: calls egain_get_articles_in_topic(portal_id="2ibo79", topic_id="308200000003062")
+Agent: "I found a sub-topic 'Upcoming Features for AI Agent 1.2.0' under
+        'AI Agent for Contact Center'. I'll add each release note article there.
+
+        Article 1 — Sync Now Button:
+        **Topic:** AI Agent for Contact Center > Upcoming Features for AI Agent 1.2.0
+        **Title:** Sync Now Button for URL-based Knowledge Sources
+
+        [Markdown content here]
+
+        Create this article?"
+
+PM: "Yes"
+Agent: "Article 2 — Agent Handoff v2:
+        **Topic:** AI Agent for Contact Center > Upcoming Features for AI Agent 1.2.0
+        ...
+
+        Also, Feature 1 has 'Helpdoc update needed: Yes' for
+        'AI agent knowledge source configuration'. I'll search for that article."
+Agent: calls egain_get_articles_in_topic(portal_id="2ibo79", topic_id="308200000003062")
+Agent: "Found article 'AI Agent Knowledge Source Configuration' (EASY-17468).
+        Here's the suggested update: [Markdown diff]. Update this article?"
+```
+
+### Skills structure
+
+```
+config/skills/
+├── aha/
+│   ├── SKILL.md          ← How to use Aha tools, two-level fetch, gotchas
+│   ├── tools.py          ← 5 tool functions (AHA_TOOLS)
+│   └── references/
+│       └── api.md        ← Field paths, release format
+│
+├── egain/
+│   ├── SKILL.md          ← How to use eGain tools, two-level fetch, summaries, gotchas
+│   ├── tools.py          ← 2 tool functions (EGAIN_TOOLS)
+│   └── references/
+│       └── api.md        ← Endpoints, article format
+│
+└── company-context/
+    └── SKILL.md          ← Format spec for company-context.md (developer reference)
+```
+
+### Adding new capabilities
+
+| New capability | What to add |
+|---|---|
+| Mailchimp emails | `config/skills/mailchimp/SKILL.md` + `tools.py` + update system prompt |
+| Slack posts | `config/skills/slack/SKILL.md` + `tools.py` + update system prompt |
+| Jira context | `config/skills/jira/SKILL.md` + `tools.py` + update system prompt |
+
+New skill folder → register tools on agent → update system prompt. Zero structural changes.
+
+---
 
 Build graph nodes in dependency order. Each node can be manually tested before building the next.
 
@@ -2414,1039 +2435,126 @@ async def instructions(ctx: RunContext[AgentDeps]) -> str:
     )
 ```
 
-Prompt files: `prompts/entry_node.txt`, `prompts/release_confirm_node.txt`, `prompts/release_context_node.txt`, `prompts/portal_context_node.txt`, `prompts/plan_gen_node.txt`, `prompts/plan_review_node.txt`, `prompts/output_node.txt`, `prompts/output_review_node.txt`, `prompts/adhoc_router_node.txt`, `prompts/suggest_node.txt`, `prompts/update_feedback_node.txt`, `prompts/refine_node.txt`, `prompts/COMPACTION_PROMPT.txt`.
+Prompt file: `prompts/system.txt` — the main system prompt for the agent. All skills and context are injected into it at runtime.
 
-### Step 5.1 — EntryNode
+### Step 5.1 — System prompt
 
-Create `services/orchestration/graph/nodes/entry.py`:
+Already created at `prompts/system.txt`. Minimal — PM name, products, capabilities. Skills are appended at runtime via `@agent.instructions`.
+
+### Step 5.2 — Create the agent
+
+Create `services/orchestration/agent.py`:
 
 ```python
-"""EntryNode: identify PM, load context, route to release or ad-hoc flow."""
+"""
+services/orchestration/agent.py
+
+The PMM AI Agent — one PydanticAI Agent with all tools registered.
+Multi-turn conversation with PMs via message_history.
+"""
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pydantic import BaseModel
-from pydantic_ai import Agent, RunContext
-from pydantic_graph import BaseNode, GraphRunContext
+from pydantic_ai import Agent
+
 from tools.deps import AgentDeps
-from session.models import PMAgentState
+from context_loader.prompt_loader import load_prompt
+from context_loader.skill_loader import load_skill_md
 
+# ── Import all tool functions ────────────────────────────────────────────────
 
-# ── LLM Agent (called inside BaseNode.run) ─────────────────────────────────
+from config.skills.release_features.tools import RELEASE_FEATURES_TOOLS
+from config.skills.feature_search.tools import FEATURE_SEARCH_TOOLS
+from config.skills.portal_articles.tools import PORTAL_ARTICLES_TOOLS
+from config.skills.context.tools import CONTEXT_TOOLS
 
-class EntryResult(BaseModel):
-    message:       str
-    next_node:     str   # "ContextSetupNode" | "AdHocRouterNode" | "EntryNode"
-    awaiting_input: bool = False
+ALL_TOOLS = (
+    RELEASE_FEATURES_TOOLS
+    + FEATURE_SEARCH_TOOLS
+    + PORTAL_ARTICLES_TOOLS
+    + CONTEXT_TOOLS
+)
 
+# ── Create the agent ─────────────────────────────────────────────────────────
 
-entry_agent: Agent[AgentDeps, EntryResult] = Agent(
+pmm_agent: Agent[AgentDeps, str] = Agent(
     deps_type=AgentDeps,
-    result_type=EntryResult,
+    output_type=str,
+    tools=ALL_TOOLS,
 )
 
 
-@entry_agent.instructions
-async def entry_instructions(ctx: RunContext[AgentDeps]) -> str:
-    from context_loader.prompt_loader import load_prompt
+# ── System prompt (dynamic — injected per session) ───────────────────────────
+
+@pmm_agent.instructions
+async def system_instructions(ctx) -> str:
+    """Build the system prompt from template + PM context + skill instructions."""
     pm = ctx.deps.pm_context
-    return load_prompt("entry_node").format(
+    template = load_prompt("system")
+
+    # Load skill SKILL.md content for injection
+    release_features_skill = load_skill_md("release_features")
+    release_notes_skill = load_skill_md("release_notes")
+    portal_articles_skill = load_skill_md("portal_articles")
+    feature_search_skill = load_skill_md("feature_search")
+
+    return template.format(
         pm_name=pm.name,
         pm_products=", ".join(pm.owned_products),
-    )
-
-
-# ── Graph Node ──────────────────────────────────────────────────────────────
-
-@dataclass
-class EntryNode(BaseNode[PMAgentState, AgentDeps]):
-    """LLM reasoning — identify PM, greet, route to release or ad-hoc flow."""
-
-    async def run(
-        self, ctx: GraphRunContext[PMAgentState, AgentDeps]
-    ) -> ContextSetupNode | AdHocRouterNode | EntryNode:
-        prompt = ctx.state.pm_input or "Hello, I need to update documentation."
-        ctx.state.pm_input = None  # consumed
-
-        result = await entry_agent.run(
-            prompt, deps=ctx.deps,
-            model=ctx.deps.llm_model, model_settings=ctx.deps.model_settings,
-        )
-        ctx.state.last_message = result.output.message
-
-        if result.output.next_node == "AdHocRouterNode":
-            return AdHocRouterNode()
-        if result.output.awaiting_input:
-            return EntryNode()  # loop back — PM needs to clarify
-        return ContextSetupNode()
-```
-
-**Key pattern:** The `Agent` is defined at module level (same as before). The `BaseNode.run()` method calls the agent, mutates `ctx.state`, and returns the next node class instance. The return type annotation (`-> ContextSetupNode | AdHocRouterNode | EntryNode`) defines valid edges — type-checked when the `Graph` is constructed.
-
-
-
-**Checkpoint 5.1 — EntryNode:** Run the test above. It should print a greeting and `next_node: ContextSetupNode`.
-
----
-
-### Step 5.2 — ContextSetupNode
-
-Create `services/orchestration/graph/nodes/context_setup.py`:
-
-```python
-"""ContextSetupNode: Python logic — validates pm_context is loaded. No LLM call."""
-from __future__ import annotations
-
-from dataclasses import dataclass
-from pydantic_graph import BaseNode, GraphRunContext
-from tools.deps import AgentDeps
-from session.models import PMAgentState
-
-# NOTE: Uses Python logic now. Upgrade to LLM agent when this node needs
-# reasoning (e.g., when new capabilities require context validation decisions).
-
-
-@dataclass
-class ContextSetupNode(BaseNode[PMAgentState, AgentDeps]):
-    """Python logic — validates pm_context is loaded and has Aha mappings."""
-
-    async def run(
-        self, ctx: GraphRunContext[PMAgentState, AgentDeps]
-    ) -> ReleaseConfirmNode:
-        pm = ctx.state.pm_context
-        if not pm or not pm.aha_mappings:
-            raise ValueError(f"No Aha product mappings found for PM")
-        products = ", ".join(pm.owned_products)
-        ctx.state.last_message = f"Context loaded for {pm.name}. Products: {products}. Ready to proceed."
-        return ReleaseConfirmNode()
-```
-
-**Python-logic nodes use the exact same `BaseNode` pattern** — they just don't call an LLM agent inside `run()`. This makes it trivial to upgrade to an LLM agent later: add an `Agent` and call it inside `run()`, without changing the graph structure or edges.
-
----
-
-### Step 5.3 — ReleaseConfirmNode (HITL Gate 1)
-
-Create `services/orchestration/graph/nodes/release_confirm.py`:
-
-```python
-"""
-ReleaseConfirmNode — HITL Gate 1.
-Lists active releases for the PM's products and waits for them to pick one.
-For AIA products: lists version tags. For ECAI/ECKN/ECAD: lists standard releases.
-"""
-from __future__ import annotations
-from pydantic import BaseModel
-from pydantic_ai import Agent, RunContext
-from tools.deps import AgentDeps
-
-
-class ReleaseConfirmResult(BaseModel):
-    message:        str
-    awaiting_input: bool = True
-    next_node:      str  = "ReleaseConfirmNode"
-    release_id:     str | None = None
-    release_label:  str | None = None
-
-
-release_confirm_agent: Agent[AgentDeps, ReleaseConfirmResult] = Agent(
-    deps_type=AgentDeps,
-    # model passed at agent.run() time from deps.llm_model
-    result_type=ReleaseConfirmResult,
-)
-
-
-@release_confirm_agent.instructions
-async def release_confirm_instructions(ctx: RunContext[AgentDeps]) -> str:
-    from context_loader.prompt_loader import load_prompt
-    pm = ctx.deps.pm_context
-    return load_prompt("release_confirm_node").format(
-        pm_name=pm.name,
-        pm_products=", ".join(pm.owned_products),
-    )
-
-
-async def run_release_confirm_node(state, deps, pm_input: str | None = None) -> ReleaseConfirmResult:
-    prompt = pm_input or "Please list available releases for my products."
-    result = await release_confirm_agent.run(prompt, deps=deps,
-                                    model=deps.llm_model, model_settings=deps.model_settings)
-    return result.output
-```
-
----
-
-### Step 5.4 — ReleaseContextAgentNode (Tool-Agent Node)
-
-Create `services/orchestration/graph/nodes/release_context_agent.py`:
-
-```python
-"""
-ReleaseContextAgentNode — Tool-Agent Node.
-Fetches all Aha release context: features with full details, images, Jira URLs.
-Uses Aha tools. Typically 1–3 Lambda calls (single call returns all features with details).
-"""
-from __future__ import annotations
-from typing import Any
-from pydantic import BaseModel
-from pydantic_ai import Agent, RunContext
-from tools.deps import AgentDeps
-from config.skills.aha.tools import AHA_TOOLS
-
-
-class FeatureSpec(BaseModel):
-    id:            str
-    name:          str
-    description:   str
-    jira_url:      str | None
-    documents_impacted: str
-    tags:          list[str] = []
-    attachments:   list[dict] = []
-
-
-class ReleaseContextResult(BaseModel):
-    features:      list[FeatureSpec]
-    product_key:   str
-    release_label: str
-    component_summary: str
-
-
-release_context_agent: Agent[AgentDeps, ReleaseContextResult] = Agent(
-    deps_type=AgentDeps,
-    # model passed at agent.run() time from deps.llm_model
-    result_type=ReleaseContextResult,
-    max_result_retries=3,
-    tools=AHA_TOOLS,
-)
-
-
-@release_context_agent.instructions
-async def release_context_instructions(ctx: RunContext[AgentDeps]) -> str:
-    pm       = ctx.deps.pm_context
-    mappings = "\n".join(
-        f"- {code}: key={m.aha_product_key}, type={m.release_field_type}"
-        + (f", aia_prefix={m.aia_version_prefix}" if m.aia_version_prefix else "")
-        for code, m in pm.aha_mappings.items()
-    )
-    return f"""You are gathering Aha release context for {pm.name}.
-Current release: {ctx.deps.release_label}
-PM products: {", ".join(pm.owned_products)}
-
-Aha product mappings:
-{mappings}
-
-Cadence rule: {pm.release_cadence_rules}
-
---- Tool usage rules ---
-{ctx.deps.aha_skill}
-"""
-
-
-async def run_release_context_agent_node(state, deps) -> ReleaseContextResult:
-    prompt = (
-        f"Gather complete Aha context for release '{state.release_label}'. "
-        f"Follow the tool usage rules. Return structured data."
-    )
-    result = await release_context_agent.run(prompt, deps=deps,
-                                    model=deps.llm_model, model_settings=deps.model_settings)
-    return result.output
-```
-
----
-
-### Step 5.5 — PortalContextAgentNode (Tool-Agent Node)
-
-Create `services/orchestration/graph/nodes/portal_context_agent.py`:
-
-```python
-"""
-PortalContextAgentNode — Tool-Agent Node.
-Surveys eGain portal: lists topics, browses articles, gets summaries.
-Uses eGain tools.
-"""
-from __future__ import annotations
-from pydantic import BaseModel
-from pydantic_ai import Agent, RunContext
-from tools.deps import AgentDeps
-from config.skills.egain.tools import EGAIN_TOOLS
-
-
-class PortalArticle(BaseModel):
-    id:          str
-    title:       str
-    topic_id:    str
-    topic_name:  str
-    status:      str
-    summary:     str
-
-
-class PortalContextResult(BaseModel):
-    articles:     list[PortalArticle]
-    topics:       list[dict]
-    survey_notes: str
-
-
-portal_context_agent: Agent[AgentDeps, PortalContextResult] = Agent(
-    deps_type=AgentDeps,
-    # model passed at agent.run() time from deps.llm_model
-    result_type=PortalContextResult,
-    tools=EGAIN_TOOLS,
-)
-
-
-@portal_context_agent.instructions
-async def portal_context_instructions(ctx: RunContext[AgentDeps]) -> str:
-    pm = ctx.deps.pm_context
-    portal_info = ""
-    for product, pctx in pm.portal_context.items():
-        topics = "\n".join(f"    - {t['name']}: {t['id']}" for t in pctx["topics"])
-        portal_info += f"  {product} — Portal ID: {pctx['portal_id']} ({pctx['portal_name']})\n{topics}\n"
-    return f"""You are surveying the eGain portal for {pm.name}.
-Release being documented: {ctx.deps.release_label}
-PM products: {", ".join(pm.owned_products)}
-
-Portal context (use these IDs in tool calls):
-{portal_info}
-
---- Tool usage rules ---
-{ctx.deps.egain_skill}
-"""
-
-
-async def run_portal_context_agent_node(state, deps) -> PortalContextResult:
-    prompt = (
-        f"Survey the eGain portal for articles relevant to {state.release_label}. "
-        f"Focus on the PM's product folders and the Release Notes folder."
-    )
-    result = await portal_context_agent.run(prompt, deps=deps,
-                                    model=deps.llm_model, model_settings=deps.model_settings)
-    return result.output
-```
-
----
-
-### Step 5.6 — PlanGenNode
-
-Create `services/orchestration/graph/nodes/plan_gen.py`:
-
-```python
-"""
-PlanGenNode — pure LLM reasoning, no tools.
-Matches Aha features to existing portal articles → DocumentPlan.
-Re-runs if state.plan_feedback is set (PM edited the plan).
-"""
-from __future__ import annotations
-import json
-from pydantic import BaseModel
-from pydantic_ai import Agent, RunContext
-from tools.deps import AgentDeps
-from session.models import ArticlePlan, DocumentPlan
-
-
-class PlanGenResult(BaseModel):
-    plan:      DocumentPlan
-    rationale: str
-
-
-plan_gen_agent: Agent[AgentDeps, PlanGenResult] = Agent(
-    deps_type=AgentDeps,
-    # model passed at agent.run() time from deps.llm_model
-    result_type=PlanGenResult,
-)
-
-
-@plan_gen_agent.instructions
-async def plan_gen_instructions(ctx: RunContext[AgentDeps]) -> str:
-    pm = ctx.deps.pm_context
-    return f"""You are a documentation planning assistant for {pm.name}.
-Release: {ctx.deps.release_label}
-Products: {", ".join(pm.owned_products)}
-
-Available portal context: {json.dumps(pm.portal_context)}
-
-Your task:
-1. For each Aha feature tagged 'release notes': decide if an existing article needs
-   updating, or a new article should be created.
-2. Match features to articles by title similarity and topic area.
-3. For updates: identify which article (by ID) and summarise planned changes.
-4. For creates: suggest a title and folder_id from the folder structure above.
-5. If plan_feedback is provided in the prompt, incorporate it.
-
-Always set jira_url on each article plan if the feature has one.
-Release notes articles always go in the Release Notes folder (folder_006).
-"""
-
-
-async def run_plan_gen_node(state, deps) -> PlanGenResult:
-    aha_summary   = json.dumps([f.model_dump() if hasattr(f, 'model_dump') else f
-                                for f in (state.aha_specs or [])], indent=2)[:3000]
-    portal_summary = json.dumps([a.model_dump() if hasattr(a, 'model_dump') else a
-                                  for a in (state.portal_articles or [])], indent=2)[:3000]
-    feedback_note = ""
-    if state.plan_feedback:
-        feedback_note = f"\n\nPM FEEDBACK ON PREVIOUS PLAN — incorporate this:\n{state.plan_feedback}"
-
-    prompt = f"""Generate a documentation update plan.
-
-Aha release features:
-{aha_summary}
-
-Current portal articles:
-{portal_summary}
-{feedback_note}
-"""
-    result = await plan_gen_agent.run(prompt, deps=deps,
-                                    model=deps.llm_model, model_settings=deps.model_settings)
-    return result.output
-```
-
----
-
-### Step 5.7 — PlanReviewNode (HITL Gate 2)
-
-Create `services/orchestration/graph/nodes/plan_review.py`:
-
-```python
-"""
-PlanReviewNode — HITL Gate 2.
-Presents DocumentPlan to PM. On confirm → ModeSelectNode. On edit → PlanGenNode.
-"""
-from __future__ import annotations
-from pydantic import BaseModel
-from pydantic_ai import Agent, RunContext
-from tools.deps import AgentDeps
-from session.models import DocumentPlan
-
-
-class PlanReviewResult(BaseModel):
-    message:        str
-    awaiting_input: bool = True
-    next_node:      str  = "PlanReviewNode"
-    plan_feedback:  str | None = None   # set when PM wants changes
-
-
-plan_review_agent: Agent[AgentDeps, PlanReviewResult] = Agent(
-    deps_type=AgentDeps,
-    # model passed at agent.run() time from deps.llm_model
-    result_type=PlanReviewResult,
-)
-
-
-@plan_review_agent.instructions
-async def plan_review_instructions(ctx: RunContext[AgentDeps]) -> str:
-    return f"""You are presenting a documentation plan for review to {ctx.deps.pm_context.name}.
-Release: {ctx.deps.release_label}
-
-Present the plan clearly: list articles to update and articles to create.
-For each, show the title, what will change, and the Jira URL.
-
-Then ask for confirmation.
-
-When PM responds:
-- "confirm" / "looks good" / "ok" / "yes" / "proceed" → next_node="ModeSelectNode", awaiting_input=False
-- Anything else (feedback/edit request) → capture as plan_feedback, next_node="PlanGenNode", awaiting_input=False
-"""
-
-
-async def run_plan_review_node(state, deps, pm_input: str | None = None) -> PlanReviewResult:
-    import json
-    if pm_input is None:
-        # First time — format and present the plan
-        plan = state.plan
-        prompt = f"Present this plan for review:\n{plan.model_dump_json(indent=2) if plan else 'No plan yet'}"
-    else:
-        prompt = f"PM responded: {pm_input}"
-    result = await plan_review_agent.run(prompt, deps=deps,
-                                    model=deps.llm_model, model_settings=deps.model_settings)
-    return result.output
-```
-
----
-
-### Step 5.8 — ModeSelectNode (HITL Gate 3)
-
-Create `services/orchestration/graph/nodes/mode_select.py`:
-
-```python
-"""ModeSelectNode — HITL Gate 3. Ask PM: updates first or new articles first?"""
-from __future__ import annotations
-from pydantic import BaseModel
-from pydantic_ai import Agent, RunContext
-from tools.deps import AgentDeps
-
-
-class ModeSelectResult(BaseModel):
-    message:        str
-    awaiting_input: bool = True
-    next_node:      str  = "ModeSelectNode"
-    mode_order:     list[str] = []   # ["updates","creates"] or ["creates","updates"]
-
-
-mode_select_agent: Agent[AgentDeps, ModeSelectResult] = Agent(
-    deps_type=AgentDeps,
-    # model passed at agent.run() time from deps.llm_model
-    result_type=ModeSelectResult,
-)
-
-
-@mode_select_agent.instructions
-async def mode_select_instructions(ctx: RunContext[AgentDeps]) -> str:
-    return f"""Ask {ctx.deps.pm_context.name} whether to start with updating
-existing articles or creating new ones.
-
-When PM responds:
-- "updates" / "update first" / "existing" → mode_order=["updates","creates"], next_node="ShowUpdatePlan", awaiting_input=False
-- "creates" / "new" / "new articles" → mode_order=["creates","updates"], next_node="ShowCreatePlan", awaiting_input=False
-- Unclear → re-prompt (awaiting_input=True)
-"""
-
-
-async def run_mode_select_node(state, deps, pm_input: str | None = None) -> ModeSelectResult:
-    prompt = pm_input or "Shall we start with updating existing articles or creating new ones?"
-    result = await mode_select_agent.run(prompt, deps=deps,
-                                    model=deps.llm_model, model_settings=deps.model_settings)
-    return result.output
-```
-
----
-
-### Step 5.9 — UpdateIterator Nodes
-
-Create `services/orchestration/graph/nodes/update_iterator.py`:
-
-```python
-"""
-Update Iterator — per-article loop for updates.
-Four node functions: ShowUpdatePlan, UpdateFeedbackGate (HITL), RefineUpdate, AdvanceUpdateIndex.
-"""
-from __future__ import annotations
-from pydantic import BaseModel
-from pydantic_ai import Agent, RunContext
-from tools.deps import AgentDeps
-from session.models import ArticlePlan, IteratorState
-
-
-# ── Shared result type ────────────────────────────────────────────────────────
-
-class UpdateIteratorResult(BaseModel):
-    message:        str
-    awaiting_input: bool = False
-    next_node:      str  = "UpdateFeedbackGate"
-    refined_content: str | None = None
-
-
-# ── Agents ────────────────────────────────────────────────────────────────────
-
-show_update_agent: Agent[AgentDeps, UpdateIteratorResult] = Agent(
-    deps_type=AgentDeps, result_type=UpdateIteratorResult)  # model from deps.llm_model
-
-feedback_agent: Agent[AgentDeps, UpdateIteratorResult] = Agent(
-    deps_type=AgentDeps, result_type=UpdateIteratorResult)  # model from deps.llm_model
-
-refine_agent: Agent[AgentDeps, UpdateIteratorResult] = Agent(
-    deps_type=AgentDeps, result_type=UpdateIteratorResult)  # model from deps.llm_model
-
-
-@show_update_agent.instructions
-async def show_update_instructions(ctx: RunContext[AgentDeps]) -> str:
-    return f"""Present the current article update plan to {ctx.deps.pm_context.name}.
-Show: article title, what will be changed, Jira reference.
-Then ask for confirmation or feedback. Set awaiting_input=True, next_node="UpdateFeedbackGate"."""
-
-
-@feedback_agent.instructions
-async def feedback_gate_instructions(ctx: RunContext[AgentDeps]) -> str:
-    return f"""Process PM feedback for {ctx.deps.pm_context.name} on the current article update.
-- "confirm" / "yes" / "ok" / "looks good" / "lgtm" → next_node="AdvanceUpdateIndex", awaiting_input=False
-- Any actual feedback → next_node="RefineUpdate", awaiting_input=False, include feedback in message
-"""
-
-
-@refine_agent.instructions
-async def refine_instructions(ctx: RunContext[AgentDeps]) -> str:
-    return f"""Refine the article content based on {ctx.deps.pm_context.name}'s feedback.
-Produce updated content in HTML. Set next_node="ShowUpdatePlan" to show the refined version."""
-
-
-# ── Node runners ──────────────────────────────────────────────────────────────
-
-async def run_show_update_plan(state, deps) -> UpdateIteratorResult:
-    article = state.update_iterator.current_article()
-    prompt  = f"Present this article update plan:\nTitle: {article.title}\nChanges: {article.planned_changes}\nJira: {article.jira_url}"
-    result  = await show_update_agent.run(prompt, deps=deps,
-                                    model=deps.llm_model, model_settings=deps.model_settings)
-    return result.output
-
-
-async def run_update_feedback_gate(state, deps, pm_input: str) -> UpdateIteratorResult:
-    result = await feedback_agent.run(pm_input, deps=deps,
-                                          model=deps.llm_model, model_settings=deps.model_settings)
-    # If confirmed: mark article confirmed in state
-    if result.output.next_node == "AdvanceUpdateIndex":
-        article = state.update_iterator.current_article()
-        article.confirmed = True
-        state.update_iterator.confirmed_articles.append(article)
-    return result.output
-
-
-async def run_refine_update(state, deps, pm_feedback: str) -> UpdateIteratorResult:
-    article = state.update_iterator.current_article()
-    prompt  = f"Article: {article.title}\nCurrent plan: {article.planned_changes}\nPM feedback: {pm_feedback}\nRefine and produce updated HTML content."
-    result  = await refine_agent.run(prompt, deps=deps,
-                                         model=deps.llm_model, model_settings=deps.model_settings)
-    # Store refined content in state
-    if result.output.refined_content:
-        article.refined_content = result.output.refined_content
-    return result.output
-
-
-async def run_advance_update_index(state, deps) -> UpdateIteratorResult:
-    state.update_iterator.current_index += 1
-    if state.update_iterator.is_done():
-        # All updates done — route to creates or output
-        if "creates" in state.mode_order and state.create_iterator.articles:
-            next_node = "ShowCreatePlan"
-        else:
-            next_node = "OutputAgentNode"
-        return UpdateIteratorResult(
-            message="All article updates confirmed.",
-            next_node=next_node,
-        )
-    return UpdateIteratorResult(
-        message="Moving to next article.",
-        next_node="ShowUpdatePlan",
+        pm_reports_to=pm.reports_to or "—",
+    ) + (
+        "\n\n--- Skill: Release Features ---\n" + release_features_skill
+        + "\n\n--- Skill: Release Notes ---\n" + release_notes_skill
+        + "\n\n--- Skill: Portal Articles ---\n" + portal_articles_skill
+        + "\n\n--- Skill: Feature Search ---\n" + feature_search_skill
     )
 ```
 
----
-
-### Step 5.10 — CreateIterator Nodes
-
-Create `services/orchestration/graph/nodes/create_iterator.py`:
-
-```python
-"""
-Create Iterator — per-article loop for new articles.
-Mirrors UpdateIterator exactly but for creates.
-"""
-from __future__ import annotations
-from pydantic import BaseModel
-from pydantic_ai import Agent, RunContext
-from tools.deps import AgentDeps
-
-
-class CreateIteratorResult(BaseModel):
-    message:        str
-    awaiting_input: bool = False
-    next_node:      str  = "CreateFeedbackGate"
-    draft_content:  str | None = None
-
-
-show_create_agent:   Agent[AgentDeps, CreateIteratorResult] = Agent(
-    deps_type=AgentDeps, result_type=CreateIteratorResult)  # model from deps.llm_model
-create_feedback_agent: Agent[AgentDeps, CreateIteratorResult] = Agent(
-    deps_type=AgentDeps, result_type=CreateIteratorResult)  # model from deps.llm_model
-refine_create_agent:  Agent[AgentDeps, CreateIteratorResult] = Agent(
-    deps_type=AgentDeps, result_type=CreateIteratorResult)  # model from deps.llm_model
-
-
-@show_create_agent.instructions
-async def show_create_instructions(ctx: RunContext[AgentDeps]) -> str:
-    return f"""Present the new article plan to {ctx.deps.pm_context.name}.
-Show: proposed title, destination folder, outline of content, Jira reference.
-Generate a draft in HTML. Ask for confirmation or feedback. awaiting_input=True."""
-
-
-@create_feedback_agent.instructions
-async def create_feedback_instructions(ctx: RunContext[AgentDeps]) -> str:
-    return f"""Process PM feedback on the new article draft for {ctx.deps.pm_context.name}.
-- "confirm" / "yes" / "ok" / "looks good" → next_node="AdvanceCreateIndex", awaiting_input=False
-- Any feedback → next_node="RefineCreate", awaiting_input=False
-"""
-
-
-@refine_create_agent.instructions
-async def refine_create_instructions(ctx: RunContext[AgentDeps]) -> str:
-    return "Refine the new article based on PM feedback. Produce updated HTML. next_node='ShowCreatePlan'."
-
-
-async def run_show_create_plan(state, deps) -> CreateIteratorResult:
-    article = state.create_iterator.current_article()
-    prompt  = f"Generate a draft for new article:\nTitle: {article.title}\nFolder: {article.folder_id}\nPlan: {article.planned_changes}"
-    result  = await show_create_agent.run(prompt, deps=deps,
-                                             model=deps.llm_model, model_settings=deps.model_settings)
-    if result.output.draft_content:
-        article.refined_content = result.output.draft_content
-    return result.output
-
-
-async def run_create_feedback_gate(state, deps, pm_input: str) -> CreateIteratorResult:
-    result = await create_feedback_agent.run(pm_input, deps=deps,
-                                                model=deps.llm_model, model_settings=deps.model_settings)
-    if result.output.next_node == "AdvanceCreateIndex":
-        article = state.create_iterator.current_article()
-        article.confirmed = True
-        state.create_iterator.confirmed_articles.append(article)
-    return result.output
-
-
-async def run_refine_create(state, deps, pm_feedback: str) -> CreateIteratorResult:
-    article = state.create_iterator.current_article()
-    prompt  = f"Title: {article.title}\nDraft: {article.refined_content or article.planned_changes}\nFeedback: {pm_feedback}"
-    result  = await refine_create_agent.run(prompt, deps=deps,
-                                               model=deps.llm_model, model_settings=deps.model_settings)
-    if result.output.draft_content:
-        article.refined_content = result.output.draft_content
-    return result.output
-
-
-async def run_advance_create_index(state, deps) -> CreateIteratorResult:
-    state.create_iterator.current_index += 1
-    if state.create_iterator.is_done():
-        return CreateIteratorResult(
-            message="All new articles confirmed.", next_node="OutputAgentNode")
-    return CreateIteratorResult(
-        message="Moving to next article.", next_node="ShowCreatePlan")
-```
-
----
-
-### Step 5.11 — OutputAgentNode (Tool-Agent Node)
-
-Create `services/orchestration/graph/nodes/output_agent.py`:
-
-```python
-"""
-OutputAgentNode — LLM Reasoning Node.
-Presents finalised article HTML to the PM with create/update/both recommendations.
-No eGain tools — eGain integration is read-only. PM applies changes manually in portal.
-"""
-from __future__ import annotations
-from typing import Any
-from pydantic import BaseModel
-from pydantic_ai import Agent, RunContext
-from tools.deps import AgentDeps
-
-
-class OutputArticle(BaseModel):
-    title:          str
-    article_id:     str | None = None   # set for updates, None for creates
-    recommendation: str                 # "create" | "update" | "both"
-    reasoning:      str                 # why this recommendation
-    html_content:   str                 # full article HTML for PM to apply
-    target_article: str | None = None   # existing article title (for update recommendation)
-
-
-class OutputResult(BaseModel):
-    articles:  list[OutputArticle]
-    count:     int
-    summary:   str   # human-readable summary for the PM
-
-
-output_agent: Agent[AgentDeps, OutputResult] = Agent(
-    deps_type=AgentDeps,
-    # model passed at agent.run() time from deps.llm_model
-    result_type=OutputResult,
-    # No eGain tools registered — this is pure LLM reasoning (no write APIs exist)
-)
-
-
-@output_agent.instructions
-async def output_instructions(ctx: RunContext[AgentDeps]) -> str:
-    return f"""You are presenting final documentation content to the PM.
-Release: {ctx.deps.release_label}
-
-The eGain portal has NO write APIs. You cannot create or update articles directly.
-Instead, present the content for the PM to manually apply in the portal.
-
-For each confirmed article, you must:
-1. Generate the full HTML content (using <h2>, <h3>, <p>, <ul>/<li>, <img> elements).
-2. Recommend one of three actions:
-   - "create" — when no existing article covers this content.
-     Include: suggested title, suggested topic/folder, full HTML.
-   - "update" — when an existing article clearly matches.
-     Include: existing article title, article ID, full updated HTML.
-   - "both" — when it's ambiguous. Present both options with reasoning
-     and let the PM choose.
-
-Decision rules:
-- If an existing article title closely matches the planned content → recommend "update".
-- If no existing article covers the topic → recommend "create".
-- If an existing article partially covers it but a new dedicated article would be cleaner
-  → present "both" options with reasoning.
-
-Return all articles with their HTML content and recommendations.
-"""
-
-
-async def run_output_agent_node(state, deps) -> OutputResult:
-    updates = state.update_iterator.confirmed_articles
-    creates = state.create_iterator.confirmed_articles
-
-    import json
-    updates_json = json.dumps(
-        [a.model_dump() for a in updates], indent=2)[:2000]
-    creates_json = json.dumps(
-        [a.model_dump() for a in creates], indent=2)[:2000]
-
-    prompt = f"""Present the following confirmed articles to the PM with HTML content
-and create/update recommendations:
-
-UPDATES ({len(updates)} articles):
-{updates_json}
-
-NEW ARTICLES ({len(creates)} articles):
-{creates_json}
-
-Generate full HTML content for each article and recommend whether to create a new
-article, update an existing one, or present both options.
-"""
-    result = await output_agent.run(prompt, deps=deps,
-                                    model=deps.llm_model, model_settings=deps.model_settings)
-    return result.output
-```
-
----
-
-### Step 5.12 — AdHoc Flow Nodes
-
-Create `services/orchestration/graph/nodes/adhoc_router.py`:
-
-```python
-"""AdHocRouterNode — entry point for ad-hoc (non-release) article changes."""
-from __future__ import annotations
-from pydantic import BaseModel
-from pydantic_ai import Agent, RunContext
-from tools.deps import AgentDeps
-
-
-class AdHocResult(BaseModel):
-    message:        str
-    awaiting_input: bool = True
-    next_node:      str  = "AdHocRouterNode"
-    adhoc_intent:   str | None = None   # "update" | "create"
-
-
-adhoc_agent: Agent[AgentDeps, AdHocResult] = Agent(
-    deps_type=AgentDeps, result_type=AdHocResult)  # model from deps.llm_model
-
-
-@adhoc_agent.instructions
-async def adhoc_instructions(ctx: RunContext[AgentDeps]) -> str:
-    return f"""Guide {ctx.deps.pm_context.name} to the right flow for an ad-hoc change.
-Ask: do they want to update an existing article or create a new one?
-Do they know which article, or should the agent suggest?
-
-When intent is clear:
-- Update + knows article → adhoc_intent="update", next_node="AskArticleNode", awaiting_input=False
-- Create              → adhoc_intent="create", next_node="AskArticleNode", awaiting_input=False
-- Needs suggestion    → next_node="SuggestNode", awaiting_input=False
-"""
-
-
-async def run_adhoc_router_node(state, deps, pm_input: str | None = None) -> AdHocResult:
-    prompt = pm_input or "I need to make a specific article change."
-    result = await adhoc_agent.run(prompt, deps=deps,
-                                    model=deps.llm_model, model_settings=deps.model_settings)
-    return result.output
-```
-
-Create `services/orchestration/graph/nodes/suggest.py`:
-
-```python
-"""SuggestNode — searches portal and suggests best matching article to PM."""
-from __future__ import annotations
-from pydantic import BaseModel
-from pydantic_ai import Agent, RunContext
-from tools.deps import AgentDeps
-from config.skills.egain.tools import EGAIN_TOOLS
-
-
-class SuggestResult(BaseModel):
-    message:            str
-    awaiting_input:     bool = True
-    next_node:          str  = "SuggestNode"
-    suggested_article_id: str | None = None
-
-
-suggest_agent: Agent[AgentDeps, SuggestResult] = Agent(
-    deps_type=AgentDeps, result_type=SuggestResult,
-    tools=EGAIN_TOOLS)  # model from deps.llm_model
-
-
-@suggest_agent.instructions
-async def suggest_instructions(ctx: RunContext[AgentDeps]) -> str:
-    return f"""Search the eGain portal to find the best article to update for {ctx.deps.pm_context.name}.
-Use egain_get_articles_in_topic to find candidates.
-Present the best match with title, topic, and summary.
-Ask PM to confirm.
-
-PM confirms → suggested_article_id=<id>, next_node="ShowUpdatePlan" or "ShowCreatePlan", awaiting_input=False
-PM rejects  → search again with different terms, awaiting_input=True
-
---- Tool usage rules ---
-{ctx.deps.egain_skill}
-"""
-
-
-async def run_suggest_node(state, deps, pm_input: str | None = None) -> SuggestResult:
-    prompt = pm_input or f"Find a relevant article to update for the PM's products: {', '.join(state.pm_context.owned_products)}"
-    result = await suggest_agent.run(prompt, deps=deps,
-                                    model=deps.llm_model, model_settings=deps.model_settings)
-    return result.output
-```
-
-Create `services/orchestration/graph/nodes/ask_article.py`:
-
-```python
-"""AskArticleNode — collect article ID (update) or folder (create) from PM."""
-from __future__ import annotations
-from pydantic import BaseModel
-from pydantic_ai import Agent, RunContext
-from tools.deps import AgentDeps
-from config.skills.egain.tools import EGAIN_TOOLS
-from session.models import ArticlePlan, IteratorState
-
-
-class AskArticleResult(BaseModel):
-    message:        str
-    awaiting_input: bool = True
-    next_node:      str  = "AskArticleNode"
-
-
-ask_agent: Agent[AgentDeps, AskArticleResult] = Agent(
-    deps_type=AgentDeps, result_type=AskArticleResult,
-    tools=EGAIN_TOOLS)  # model from deps.llm_model
-
-
-@ask_agent.instructions
-async def ask_article_instructions(ctx: RunContext[AgentDeps]) -> str:
-    return f"""Help {ctx.deps.pm_context.name} specify the article to work on.
-If updating: ask for the article ID or title. Use egain_get_article_by_id to confirm it exists.
-If creating: ask for the title and call egain_get_articles_in_topic to show available folders.
-  
-When PM has confirmed the article:
-- Update → populate update_iterator with one ArticlePlan, next_node="ShowUpdatePlan", awaiting_input=False
-- Create → populate create_iterator with one ArticlePlan, next_node="ShowCreatePlan", awaiting_input=False
-"""
-
-
-async def run_ask_article_node(state, deps, pm_input: str | None = None) -> AskArticleResult:
-    intent = state.adhoc_intent or "update"
-    prompt = pm_input or f"PM wants to {intent} an article. Ask them which one."
-    result = await ask_agent.run(prompt, deps=deps,
-                                    model=deps.llm_model, model_settings=deps.model_settings)
-    return result.output
-```
-
----
-
-### Step 5.13 — Graph Assembly
-
-Create `services/orchestration/graph/graph.py`:
-
-```python
-"""
-services/orchestration/graph/graph.py
-PydanticAI Graph construction — no dispatch() function.
-All routing is handled by BaseNode return types, validated at construction.
-"""
-from __future__ import annotations
-
-from pydantic_graph import Graph, End
-from session.models import PMAgentState
-from tools.deps import AgentDeps
-
-# Import all node classes
-from graph.nodes.entry import EntryNode
-from graph.nodes.context_setup import ContextSetupNode
-from graph.nodes.release_confirm import ReleaseConfirmNode
-from graph.nodes.release_context_agent import ReleaseContextAgentNode
-from graph.nodes.portal_context_agent import PortalContextAgentNode
-from graph.nodes.plan_gen import PlanGenNode
-from graph.nodes.plan_review import PlanReviewNode
-from graph.nodes.mode_select import ModeSelectNode
-from graph.nodes.update_iterator import (
-    ShowUpdatePlanNode, UpdateFeedbackNode, RefineUpdateNode, AdvanceUpdateNode,
-)
-from graph.nodes.create_iterator import (
-    ShowCreatePlanNode, CreateFeedbackNode, RefineCreateNode, AdvanceCreateNode,
-)
-from graph.nodes.output_agent import OutputAgentNode
-from graph.nodes.output_review import OutputReviewNode
-from graph.nodes.done import DoneNode
-from graph.nodes.adhoc_router import AdHocRouterNode
-from graph.nodes.suggest import SuggestNode
-from graph.nodes.ask_article import AskArticleNode
-
-# ── Graph constructed once at module level ───────────────────────────────────
-# All edges are validated via BaseNode return type annotations.
-# If a node returns a class not in this list, construction fails immediately.
-
-pmm_graph = Graph(
-    nodes=[
-        EntryNode, ContextSetupNode, ReleaseConfirmNode,
-        ReleaseContextAgentNode, PortalContextAgentNode,
-        PlanGenNode, PlanReviewNode, ModeSelectNode,
-        ShowUpdatePlanNode, UpdateFeedbackNode, RefineUpdateNode, AdvanceUpdateNode,
-        ShowCreatePlanNode, CreateFeedbackNode, RefineCreateNode, AdvanceCreateNode,
-        OutputAgentNode, OutputReviewNode, DoneNode,
-        AdHocRouterNode, SuggestNode, AskArticleNode,
-    ],
-    state_type=PMAgentState,
-    deps_type=AgentDeps,
-)
-
-
-# ── HITL helpers ─────────────────────────────────────────────────────────────
-
-HITL_NODES = {
-    "EntryNode",           # may loop back for clarification
-    "ReleaseConfirmNode",  # HITL #1
-    "PlanReviewNode",      # HITL #2
-    "ModeSelectNode",      # HITL #3
-    "UpdateFeedbackNode",  # HITL #4
-    "CreateFeedbackNode",  # HITL #5
-    "OutputReviewNode",    # HITL #6
-    "AdHocRouterNode",     # ad-hoc HITL
-}
-
-
-def is_hitl_node(node) -> bool:
-    """Check if the next node needs PM input before it can run."""
-    return type(node).__name__ in HITL_NODES
-
-
-def get_node_class(node_name: str):
-    """Resolve a node class from its string name (for session resume)."""
-    node_map = {cls.__name__: cls for cls in pmm_graph.nodes}
-    cls = node_map.get(node_name)
-    if not cls:
-        raise ValueError(f"Unknown node: {node_name}")
-    return cls
-```
-
-**Checkpoint 5.13:**
+**What gets loaded into the system prompt vs loaded dynamically:**
+
+| In system prompt (every turn) | Loaded via tools (on demand) |
+|---|---|
+| PM name, products, reports_to | Release tracking rules per product |
+| Agent capabilities list | Portal topic hierarchy + IDs |
+| Skill instructions (how to use tools) | Documents Impacted tag meanings |
+| Gotchas | Full feature content (Level 2) |
+| | Full article content (Level 2) |
+
+### Step 5.3 — Verify agent
 
 ```bash
+source .venv/bin/activate
 python3 - << 'EOF'
-import sys
-sys.path.insert(0, "services/orchestration")
-from graph.graph import pmm_graph, is_hitl_node, get_node_class
-print(f"✓ Graph constructed with {len(pmm_graph.nodes)} node classes")
-print(f"✓ Mermaid diagram:\n{pmm_graph.mermaid_code(start_node=get_node_class('EntryNode'))[:500]}")
+import asyncio, sys, os
+from dotenv import load_dotenv
+load_dotenv('.env.local')
+os.environ['APP_ENV'] = 'local'
+sys.path.insert(0, 'services/orchestration')
 
-# Verify all node classes are present
-from graph.nodes.entry import EntryNode
-from graph.nodes.output_review import OutputReviewNode
-from graph.nodes.done import DoneNode
-assert is_hitl_node(OutputReviewNode())
-assert not is_hitl_node(DoneNode())
-print("✓ HITL detection works")
+from agent import pmm_agent, ALL_TOOLS
+from context_loader.s3_loader import load_company_context
+from tools.deps import build_deps
+
+async def test():
+    pm = load_company_context('Prasanth Sai')
+    deps = build_deps(pm_context=pm, session_id='test-001')
+
+    result = await pmm_agent.run(
+        'Hi, what can you help me with?',
+        deps=deps,
+        model=deps.llm_model,
+        model_settings=deps.model_settings,
+    )
+    print(f'Tools: {len(ALL_TOOLS)}')
+    print(f'Response:\n{result.output}')
+
+asyncio.run(test())
 EOF
 ```
 
----
+**Checkpoint 5.3:** The agent responds with a greeting, lists capabilities (fetch features, release notes, portal updates, search), and asks the PM what they need. It should know the PM's name and products.
 
+
+---
 
 ## Section 6 — FastAPI Layer
 
@@ -3499,7 +2607,7 @@ app.add_middleware(
 
 class StartRequest(BaseModel):
     pm_name: str   # from frontend dropdown: "Prasanth Sai", "Aiushe Mishra", "Carlos España", "Varsha Thalange"
-    mode:    str   # "release" | "adhoc"
+    # PM name comes from frontend dropdown
 
 class EndRequest(BaseModel):
     reason: str = "completed"   # "completed" | "restarted"
@@ -3542,83 +2650,72 @@ async def health():
 
 @app.post("/sessions/start")
 async def start_session(req: StartRequest):
-    pm_context  = load_company_context_by_name(req.pm_name)  # maps name → email → PMContext
-    session_id  = str(uuid.uuid4())
-    state       = PMAgentState(
+    from context_loader.s3_loader import load_company_context
+    from agent import pmm_agent
+    from compaction import count_message_chars
+
+    pm_context = load_company_context(req.pm_name)
+    session_id = str(uuid.uuid4())
+    state = PMAgentState(
         session_id=session_id,
         pm_name=req.pm_name,
         pm_context=pm_context,
-        mode=req.mode,
-        current_node="EntryNode",
         start_time=datetime.utcnow().isoformat(),
     )
     deps = build_deps(pm_context, session_id)
 
-    # Run graph until HITL pause or completion
-    from graph.graph import pmm_graph, is_hitl_node, EntryNode
-    from pydantic_graph import End
-
+    # First agent turn — agent greets the PM
     try:
-        async with pmm_graph.iter(EntryNode(), state=state, deps=deps) as graph_run:
-            node = graph_run.next_node
-            while not isinstance(node, End):
-                node = await graph_run.next(node)
-                if is_hitl_node(node):
-                    # HITL pause — save state, return message to PM
-                    state.current_node = type(node).__name__
-                    await session_manager.save(session_id, state)
-                    return {
-                        "session_id":     session_id,
-                        "message":        state.last_message,
-                        "awaiting_input": True,
-                    }
+        result = await pmm_agent.run(
+            "PM has started a new session.",
+            deps=deps,
+            model=deps.llm_model,
+            model_settings=deps.model_settings,
+        )
+        state.message_history = list(result.all_messages())
+        state.total_chars = count_message_chars(state.message_history)
     except Exception as e:
         import structlog
-        structlog.get_logger().error("graph_error", session_id=session_id, error=str(e))
-        await session_manager.save(session_id, state)
-        return {"session_id": session_id, "message": f"Error: {str(e)}. You can retry.", "awaiting_input": True}
+        structlog.get_logger().error("agent_error", session_id=session_id, error=str(e))
+        return {"session_id": session_id, "message": f"Error: {str(e)}", "awaiting_input": True}
 
-    # Graph completed without HITL pause
     await session_manager.save(session_id, state)
-    return {"session_id": session_id, "message": state.last_message, "awaiting_input": False}
+    return {"session_id": session_id, "message": result.output, "awaiting_input": True}
 
 
 @app.post("/sessions/{session_id}/respond")
 async def respond(session_id: str, req: RespondRequest):
+    from agent import pmm_agent
+    from compaction import maybe_compact, count_message_chars
+
     state = await session_manager.get(session_id)
     if not state:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    state.pm_input = req.input
-    deps = build_deps(state.pm_context, session_id, state.release_label)
+    deps = build_deps(state.pm_context, session_id)
 
-    # Resume graph from current node
-    from graph.graph import pmm_graph, is_hitl_node, get_node_class
-    from pydantic_graph import End
+    # Compaction check before next turn
+    await maybe_compact(state, deps.llm_model)
 
-    current_node_cls = get_node_class(state.current_node)
-
+    # Agent turn — continues the conversation
     try:
-        async with pmm_graph.iter(current_node_cls(), state=state, deps=deps) as graph_run:
-            node = graph_run.next_node
-            while not isinstance(node, End):
-                node = await graph_run.next(node)
-                if is_hitl_node(node):
-                    state.current_node = type(node).__name__
-                    state.pm_input = None
-                    await session_manager.save(session_id, state)
-                    return {"message": state.last_message, "awaiting_input": True}
+        result = await pmm_agent.run(
+            req.input,
+            message_history=state.message_history,
+            deps=deps,
+            model=deps.llm_model,
+            model_settings=deps.model_settings,
+        )
+        state.message_history = list(result.all_messages())
+        state.total_chars = count_message_chars(state.message_history)
     except Exception as e:
         import structlog
-        structlog.get_logger().error("graph_error", session_id=session_id, error=str(e))
+        structlog.get_logger().error("agent_error", session_id=session_id, error=str(e))
         await session_manager.save(session_id, state)
         return {"message": f"Error: {str(e)}. You can retry.", "awaiting_input": True}
 
-    # Graph completed (DoneNode returned End)
-    from session.session_history import save_session_record
-    await save_session_record(state, "completed")
-    await session_manager.delete(session_id)
-    return {"message": state.last_message, "awaiting_input": False}
+    await session_manager.save(session_id, state)
+    return {"message": result.output, "awaiting_input": True}
 
 
 @app.get("/sessions/{session_id}/status")
@@ -3628,10 +2725,10 @@ async def status(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     return {
         "session_id":   state.session_id,
-        "current_node": state.current_node,
-        "mode":         state.mode,
+        "pm_name":      state.pm_name,
         "pm_context":   state.pm_context.model_dump() if state.pm_context else None,
-        "release_label": state.release_label,
+        "total_chars":  state.total_chars,
+        "compaction_count": state.compaction_count,
     }
 
 
@@ -3670,7 +2767,7 @@ async def list_tools():
     return {"tools": [t.__name__ for t in AHA_TOOLS] + [t.__name__ for t in EGAIN_TOOLS]}
 
 
-# Graph is constructed in graph/graph.py — see Step 5.13. No dispatch() needed.
+# Single-agent architecture — no graph, no dispatch.
 ```
 
 **Checkpoint 6.1:** With Redis running:
@@ -3817,7 +2914,7 @@ def _resolve_auth(api_config: dict) -> dict:
     auth = api_config["auth"]
 
     if auth["type"] == "basic":
-        sm = boto3.client("secretsmanager", region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
+        sm = boto3.client("secretsmanager", region_name=os.environ.get("AWS_DEFAULT_REGION", "us-west-2"))
         secret = json.loads(sm.get_secret_value(SecretId=auth["credentials_secret"])["SecretString"])
         api_key = secret[auth["secret_field"]]
         token = base64.b64encode(f"{api_key}:".encode()).decode()
@@ -3838,7 +2935,7 @@ def _resolve_base_url(api_config: dict) -> str:
     if "{subdomain}" in url:
         url = url.replace("{subdomain}", os.environ.get("AHA_SUBDOMAIN", "egain"))
     if "{egain_host}" in url:
-        url = url.replace("{egain_host}", os.environ.get("EGAIN_API_HOST", "apidev.egain.com"))
+        url = url.replace("{egain_host}", os.environ.get("EGAIN_API_HOST", "api.egain.cloud"))
     return url
 
 
@@ -4033,10 +3130,10 @@ def base_url(request): return request.config.getoption("--base-url")
 def set_test_env(monkeypatch):
     monkeypatch.setenv("AHA_SUBDOMAIN",              "egain")
     monkeypatch.setenv("AHA_API_KEY_OVERRIDE",       "test-aha-key")
-    monkeypatch.setenv("EGAIN_API_HOST",              "apidev.egain.com")
+    monkeypatch.setenv("EGAIN_API_HOST",              "api.egain.cloud")
     monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
     monkeypatch.setenv("CONTEXT_BUCKET",             "test-context-bucket")
-    monkeypatch.setenv("AWS_DEFAULT_REGION",         "us-east-1")
+    monkeypatch.setenv("AWS_DEFAULT_REGION",         "us-west-2")
 
 # ── AWS mock (autouse — never hits real AWS in unit tests) ────────────────────
 @pytest.fixture(autouse=True)
@@ -4089,8 +3186,7 @@ Create `tests/fixtures/mock_state.py`:
 
 ```python
 from session.models import (
-    PMAgentState, PMContext, AhaMapping, ArticlePlan,
-    IteratorState, DocumentPlan
+    PMAgentState, PMContext, AhaMapping, ToolCallRecord
 )
 
 def make_pm_context(email="prasanth.sai@egain.com") -> PMContext:
@@ -4119,120 +3215,7 @@ def make_agent_state(pm_name="Prasanth Sai", pm_email="prasanth.sai@egain.com", 
         **kwargs
     )
 
-def make_article_plan(article_id=None, **kwargs) -> ArticlePlan:
-    return ArticlePlan(
-        title=kwargs.pop("title", "Test Article"),
-        article_id=article_id,
-        planned_changes=kwargs.pop("planned_changes", "Update section 2."),
-        jira_url=kwargs.pop("jira_url", "https://egain.atlassian.net/browse/ECAI-123"),
-        **kwargs
-    )
 
-def make_iterator_with_articles(n: int, confirmed: int = 0) -> IteratorState:
-    articles = [make_article_plan(article_id=f"article-{i}", title=f"Article {i}") for i in range(n)]
-    for i in range(confirmed):
-        articles[i].confirmed = True
-    return IteratorState(
-        articles=articles,
-        current_index=confirmed,
-        confirmed_articles=[a for a in articles if a.confirmed],
-    )
-```
-
-### Step 8.4 — Key unit tests to write
-
-**eGain read-only API test — write this first:**
-
-Create `tests/unit/egain/test_egain_read.py`:
-
-```python
-import pytest, json
-import httpx
-from unittest.mock import AsyncMock, patch
-
-@pytest.mark.asyncio
-async def test_get_articles_in_topic_returns_list():
-    """Verify egain_get_articles_in_topic parses response correctly."""
-    import sys; sys.path.insert(0, "services/orchestration")
-
-    fake_response = {
-        "articles": [
-            {"id": "10234", "title": "AIA 1.2.0 Release Notes", "status": "published",
-             "updated_at": "2025-02-15", "summary": "Release notes for AIA 1.2.0..."},
-            {"id": "10235", "title": "AIA Getting Started", "status": "published",
-             "updated_at": "2025-01-10", "summary": "Getting started guide..."},
-        ]
-    }
-
-    async def fake_invoke(lambda_name, payload):
-        assert lambda_name == "pmm-skill-client"
-        assert payload["method"] == "GET"
-        assert "getarticlesintopic" in payload["path"]
-        assert payload["params"]["portalId"] == "1001"
-        assert payload["params"]["topicId"] == "topic_001"
-        assert payload["api_config"]["auth"]["type"] == "basic_onbehalf"
-        return fake_response["articles"]
-
-    from tools.deps import LambdaClient
-    client = LambdaClient()
-    client.invoke_skill_lambda = AsyncMock(side_effect=fake_invoke)
-
-    result = await client.invoke_skill_lambda("pmm-skill-client", {
-        "method": "GET",
-        "path": "/article/getarticlesintopic",
-        "params": {"portalId": "1001", "topicId": "topic_001"},
-        "api_config": {"auth": {"type": "basic_onbehalf"}},
-    })
-
-    assert len(result) == 2
-    assert result[0]["title"] == "AIA 1.2.0 Release Notes"
-
-@pytest.mark.asyncio
-async def test_get_article_by_id_returns_content():
-    """Verify egain_get_article_by_id returns full HTML content."""
-    fake_article = {
-        "id": "10234", "title": "AIA 1.2.0 Release Notes",
-        "status": "published", "content_html": "<h2>What's New</h2><p>...</p>",
-        "topic_id": "topic_001", "updated_at": "2025-02-15"
-    }
-
-    async def fake_invoke(lambda_name, payload):
-        assert payload["params"]["articleId"] == "10234"
-        return fake_article
-
-    from tools.deps import LambdaClient
-    client = LambdaClient()
-    client.invoke_skill_lambda = AsyncMock(side_effect=fake_invoke)
-
-    result = await client.invoke_skill_lambda("pmm-skill-client", {
-        "method": "GET",
-        "path": "/article/getarticlebyid",
-        "params": {"portalId": "1001", "articleId": "10234"},
-        "api_config": {"auth": {"type": "basic_onbehalf"}},
-    })
-
-    assert result["content_html"].startswith("<h2>")
-    assert result["id"] == "10234"
-
-@pytest.mark.asyncio
-async def test_no_write_tools_registered():
-    """Verify that no write tools (create, update, delete) are registered for eGain."""
-    from config.skills.egain.tools import EGAIN_TOOLS
-    assert len(EGAIN_TOOLS) == 2, f"Expected 2 read-only tools, got {len(EGAIN_TOOLS)}"
-    # All eGain tool functions should only make GET requests (read-only)
-    for tool_fn in EGAIN_TOOLS:
-        assert "GET" in tool_fn.__doc__ or "read" in tool_fn.__doc__.lower(), \
-            f"eGain tool {tool_fn.__name__} should be read-only"
-```
-
-**OutputNode recommendation test:**
-
-Create `tests/unit/orchestration/test_output_node.py`:
-
-```python
-import pytest
-from session.models import ArticlePlan
-from graph.nodes.output_agent import OutputArticle
 
 def test_output_article_recommendation_values():
     """Verify OutputArticle only allows valid recommendation values."""
@@ -4285,13 +3268,12 @@ async def test_save_and_get_round_trip(mock_redis):
     sm = SessionManager()
     sm._redis = mock
 
-    state = PMAgentState(session_id="s-001", mode="release", current_node="PlanGenNode")
+    state = PMAgentState(session_id="s-001", pm_name="Test PM")
     await sm.save("s-001", state)
 
     loaded = await sm.get("s-001")
     assert loaded.session_id == "s-001"
     assert loaded.mode == "release"
-    assert loaded.current_node == "PlanGenNode"
 
 @pytest.mark.asyncio
 async def test_ttl_is_24_hours(mock_redis):
@@ -4355,7 +3337,6 @@ async def test_confirm_phrases_route_to_advance(phrase):
     state.update_iterator = make_iterator_with_articles(3)
 
     with patch("pydantic_ai.Agent.run") as mock_run:
-        from session.models import IteratorState
         mock_result = AsyncMock()
         mock_result.output.next_node = "AdvanceUpdateIndex"
         mock_result.output.message   = "Confirmed."
@@ -4387,7 +3368,7 @@ async def test_full_3_article_loop():
     assert state.update_iterator.current_index == 2
     assert r2.next_node == "ShowUpdatePlan"
 
-    state.mode_order = ["updates", "creates"]
+    # state simplified — agent tracks flow in conversation
     state.create_iterator = make_iterator_with_articles(0)  # no creates
     r3 = await run_advance_update_index(state, FakeDeps())
     assert r3.next_node == "OutputAgentNode"  # all done
@@ -4446,11 +3427,11 @@ aws s3 ls s3://${BUCKET_NAME}/
 
 ```bash
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com"
+ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com"
 IMAGE_TAG=$(git rev-parse --short HEAD)
 
 # Authenticate
-aws ecr get-login-password --region us-east-1 \
+aws ecr get-login-password --region us-west-2 \
   | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
 
 # Build, tag, push
@@ -4471,7 +3452,7 @@ echo "Pushed: ${ECR_REGISTRY}/pmm-orchestration:${IMAGE_TAG}"
 
 ```bash
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com"
+ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com"
 BUCKET_NAME="egain-pmm-agent-context-${ACCOUNT_ID}"
 REDIS_ENDPOINT=$(cd infrastructure/terraform && terraform output -raw redis_endpoint)
 
@@ -4492,15 +3473,15 @@ aws ecs register-task-definition --cli-input-json "{
       {\"name\": \"APP_ENV\", \"value\": \"dev\"},
       {\"name\": \"REDIS_URL\", \"value\": \"redis://${REDIS_ENDPOINT}:6379\"},
       {\"name\": \"AHA_SUBDOMAIN\", \"value\": \"egain\"},
-      {\"name\": \"EGAIN_API_HOST\", \"value\": \"apidev.egain.com\"},
+      {\"name\": \"EGAIN_API_HOST\", \"value\": \"api.egain.cloud\"},
       {\"name\": \"CONTEXT_BUCKET\", \"value\": \"${BUCKET_NAME}\"},
-      {\"name\": \"AWS_DEFAULT_REGION\", \"value\": \"us-east-1\"}
+      {\"name\": \"AWS_DEFAULT_REGION\", \"value\": \"us-west-2\"}
     ],
     \"logConfiguration\": {
       \"logDriver\": \"awslogs\",
       \"options\": {
         \"awslogs-group\": \"/ecs/pmm-orchestration\",
-        \"awslogs-region\": \"us-east-1\",
+        \"awslogs-region\": \"us-west-2\",
         \"awslogs-stream-prefix\": \"ecs\"
       }
     },
@@ -4593,13 +3574,13 @@ structlog.configure(
 log = structlog.get_logger()
 ```
 
-Add entry/exit logging to every node runner. Example for `graph/graph.py`:
+Add logging to the agent run. Example:
 
 ```python
 log.info("node.enter", node=node, session_id=state.session_id,
          pm=state.pm_context.name if state.pm_context else None)
 # ... run node ...
-log.info("node.exit",  node=node, next_node=state.current_node,
+log.info("turn.complete", session_id=state.session_id,
          release=state.release_label)
 ```
 
@@ -4666,7 +3647,7 @@ aws cloudwatch put-dashboard --dashboard-name PMM-Agent-Dev --dashboard-body '{
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 FRONTEND_BUCKET="egain-pmm-agent-ui-${ACCOUNT_ID}"
 
-aws s3api create-bucket --bucket "${FRONTEND_BUCKET}" --region us-east-1
+aws s3api create-bucket --bucket "${FRONTEND_BUCKET}" --region us-west-2
 aws s3 website --bucket "${FRONTEND_BUCKET}" \
   --index-document index.html --error-document index.html
 ```
@@ -4682,7 +3663,7 @@ sed -i "s|http://localhost:8000|http://${ALB_DNS}|g" frontend/index.html
 # Upload to S3
 aws s3 sync frontend/ s3://${FRONTEND_BUCKET}/ --delete
 
-echo "Frontend URL: http://${FRONTEND_BUCKET}.s3-website-us-east-1.amazonaws.com"
+echo "Frontend URL: http://${FRONTEND_BUCKET}.s3-website-us-west-2.amazonaws.com"
 ```
 
 **Checkpoint 10.2:** Opening the S3 website URL in a browser shows the eGain PMM Agent page and the chat launcher button.
@@ -4797,7 +3778,7 @@ No new Lambda needed — `pmm-skill-client` reads auth config from `JIRA_API_CON
 
 Then wire it in:
 ```python
-# graph/nodes/release_context_agent.py — add Jira tools
+# agent.py — Jira tools registered alongside existing tools
 from config.skills.jira.tools import JIRA_TOOLS
 
 release_context_agent: Agent[AgentDeps, ReleaseContextResult] = Agent(

@@ -1,8 +1,0 @@
-Guide {pm_name} to the right flow for an ad-hoc change.
-Ask: do they want to update an existing article or create a new one?
-Do they know which article, or should the agent suggest?
-
-When intent is clear:
-- Update + knows article → adhoc_intent="update", next_node="AskArticleNode", awaiting_input=False
-- Create              → adhoc_intent="create", next_node="AskArticleNode", awaiting_input=False
-- Needs suggestion    → next_node="SuggestNode", awaiting_input=False

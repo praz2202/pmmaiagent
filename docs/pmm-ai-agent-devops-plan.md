@@ -61,7 +61,7 @@ REDIS_URL=redis://localhost:6379
 
 
 # AWS (local uses LocalStack or real dev account)
-AWS_DEFAULT_REGION=us-east-1
+AWS_DEFAULT_REGION=us-west-2
 AWS_PROFILE=pmm-agent-dev
 
 # S3 Context Bucket (dev)
@@ -70,7 +70,7 @@ CONTEXT_BUCKET=egain-pmm-agent-context-dev
 # Secrets — in local dev, these can be overridden with plaintext values
 # In all other envs, these are read from AWS Secrets Manager
 AHA_API_KEY_OVERRIDE=          # set locally to avoid Secrets Manager call
-EGAIN_CLIENT_APP_OVERRIDE=    # eGain on-behalf-of-customer auth
+EGAIN_CLIENT_ID_OVERRIDE=    # eGain on-behalf-of-customer auth
 EGAIN_CLIENT_SECRET_OVERRIDE=
 GEMINI_API_KEY=                # default LLM provider
 CLAUDE_API_KEY=                # Anthropic LLM provider (optional)
@@ -423,7 +423,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.DEV_AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.DEV_AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          aws-region: us-west-2
 
       - name: Login to ECR
         run: |
@@ -441,7 +441,7 @@ jobs:
               --cluster pmm-agent-dev \
               --service $service \
               --force-new-deployment \
-              --region us-east-1
+              --region us-west-2
           done
 
       - name: Update Lambda functions
@@ -584,7 +584,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.PROD_AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.PROD_AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          aws-region: us-west-2
 
       - name: Login to ECR (prod)
         run: |
@@ -602,7 +602,7 @@ jobs:
               --cluster pmm-agent-prod \
               --service $service \
               --force-new-deployment \
-              --region us-east-1
+              --region us-west-2
           done
 
       - name: Deploy Lambda functions (prod)
@@ -617,7 +617,7 @@ jobs:
             aws ecs wait services-stable \
               --cluster pmm-agent-prod \
               --services $service \
-              --region us-east-1
+              --region us-west-2
           done
           echo "✅ All prod services stable"
 
@@ -804,7 +804,7 @@ for service in pmm-orchestration; do
         --cluster $CLUSTER \
         --service $service \
         --task-definition "$FAMILY:$PREVIOUS_REV" \
-        --region us-east-1
+        --region us-west-2
 done
 
 echo "✅ Rollback initiated. Waiting for services to stabilise..."
@@ -974,7 +974,7 @@ app.add_middleware(
 |---|---|---|
 | `DEV_AWS_ACCESS_KEY_ID` | ci-dev.yml | IAM key for dev account |
 | `DEV_AWS_SECRET_ACCESS_KEY` | ci-dev.yml | IAM secret for dev account |
-| `DEV_ECR_REGISTRY` | ci-dev.yml | `{account_id}.dkr.ecr.us-east-1.amazonaws.com` |
+| `DEV_ECR_REGISTRY` | ci-dev.yml | `{account_id}.dkr.ecr.us-west-2.amazonaws.com` |
 | `DEV_API_URL` | smoke tests | `https://dev-alb.pmm-agent.internal` or public ALB DNS |
 | `DEV_CF_DIST_ID` | frontend deploy | CloudFront distribution ID (dev) |
 | `DEV_SMOKE_TEST_PM_EMAIL` | smoke tests | A real dev-account PM email |

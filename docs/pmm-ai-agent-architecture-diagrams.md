@@ -28,7 +28,7 @@ graph TD
     end
 
     subgraph Skills["config/skills/ — in repo"]
-        AhaSkill["aha/\nSKILL.md\ntools.py\nscripts/aha_client.py → Lambda\nreferences/api.md"]
+        AhaSkill["aha/\nSKILL.md\ntools.py (5 tools)\nreferences/api.md"]
         EgainSkill["egain/\nSKILL.md\ntools.py (2 read-only)\nreferences/api.md"]
         CtxSkill["company-context/\nSKILL.md\nreferences/parsing.md"]
     end
@@ -45,7 +45,7 @@ graph TD
 
     subgraph External["External APIs"]
         Aha["Aha\negain.aha.io/api/v1\nBasic auth\n100 req/min"]
-        Portal["eGain Knowledge API v4\napidev.egain.com\nOn-behalf-of-customer auth\nRead-only"]
+        Portal["eGain Knowledge API v4\napi.egain.cloud\nOn-behalf-of-customer auth\nRead-only"]
     end
 
     PM -->|"HTTPS chat"| UI
@@ -192,7 +192,7 @@ graph TD
         subgraph AhaSkill["aha/"]
             AhaSKILL["SKILL.md\nLLM instructions:\n• AIA vs standard routing\n• call order\n• cross-product rules"]
             AhaTools["tools.py\nPython tool functions:\n• AHA_TOOLS list\n• API_CONFIG dict\n• endpoint + params\n• response_path + filters"]
-            AhaClient["scripts/aha_client.py\nAha-specific helpers\n(path resolution, AIA tag)"]
+            AhaTools["tools.py\n5 tool functions\nAHA_API_CONFIG + AHA_TOOLS"]
             AhaRef["references/api.md\nAha field paths\nrate limit rules\nrelease name formats\n(lazy loaded)"]
         end
 
@@ -451,7 +451,7 @@ graph TD
 
     subgraph External["External APIs"]
         Aha["egain.aha.io\nBasic auth"]
-        Portal["apidev.egain.com\nKnowledge API v4\nOn-behalf-of-customer\nRead-only"]
+        Portal["api.egain.cloud\nKnowledge API v4\nOn-behalf-of-customer\nRead-only"]
     end
 
     Internet -->|"HTTPS"| ALB

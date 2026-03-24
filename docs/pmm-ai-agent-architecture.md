@@ -58,10 +58,8 @@ Three self-contained folders following the Anthropic skills standard. Each bundl
 ```
 config/skills/
 ├── aha/
-│   ├── SKILL.md           ← LLM instructions: AIA vs standard routing, call order, filtering rules
-│   ├── tools.py           ← 6 Python tool functions + AHA_API_CONFIG constant
-│   ├── scripts/
-│   │   └── aha_client.py  ← Aha-specific helpers (path resolution, AIA tag detection)
+│   ├── SKILL.md           ← LLM instructions: two-level fetch, feature search, gotchas
+│   ├── tools.py           ← 5 Python tool functions + AHA_API_CONFIG constant
 │   └── references/
 │       └── api.md         ← Aha field paths, rate limit rules, release name formats (lazy-loaded)
 ├── egain/
@@ -120,14 +118,14 @@ Both Lambdas are stateless and short-lived. `pmm-skill-client` does not maintain
 | `api.auth.type` | Behaviour | Example skill |
 |---|---|---|
 | `basic` | Fetches `credentials_secret` from Secrets Manager, extracts `secret_field`, builds `Authorization: Basic` header | Aha |
-| `basic_onbehalf` | Fetches `credentials_secret` from Secrets Manager (`client_app`, `client_secret`), builds on-behalf-of-customer auth header | eGain |
+| `basic_onbehalf` | Fetches `credentials_secret` from Secrets Manager (`client_id`, `client_secret`), builds on-behalf-of-customer auth header | eGain |
 
 ### 3.6 Secrets (AWS Secrets Manager)
 
 | Secret | Contents |
 |---|---|
 | `pmm-agent/aha-api-key` | `{"api_key": "..."}` | Fetched by `pmm-skill-client` Lambda (declared in `aha/tools.py` `AHA_API_CONFIG`) |
-| `pmm-agent/egain-credentials` | `{"client_app": "...", "client_secret": "..."}` | Fetched by `pmm-skill-client` Lambda (declared in `egain/tools.py` `EGAIN_API_CONFIG`). On-behalf-of-customer auth. |
+| `pmm-agent/egain-credentials` | `{"client_id": "...", "client_secret": "..."}` | Fetched by `pmm-skill-client` Lambda (declared in `egain/tools.py` `EGAIN_API_CONFIG`). On-behalf-of-customer auth. |
 | `pmm-agent/gemini-api-key` | `{"api_key": "..."}` | Fetched by orchestration service — default LLM provider |
 | `pmm-agent/anthropic-api-key` | `{"api_key": "..."}` | Fetched by orchestration service — Anthropic LLM provider |
 | `pmm-agent/openai-api-key` | `{"api_key": "..."}` | Fetched by orchestration service — OpenAI LLM provider |
@@ -436,7 +434,7 @@ from services.orchestration.session.models import AgentDeps
 
 EGAIN_API_CONFIG = {
     "auth": {"type": "basic_onbehalf", "credentials_secret": "pmm-agent/egain-credentials"},
-    "base_url": "https://apidev.egain.com/knowledge/v4",
+    "base_url": "https://api.egain.cloud/knowledge/v4",
 }
 
 async def egain_get_articles_in_topic(
@@ -681,7 +679,7 @@ Internet ──► CloudFront ──► S3 (frontend: PM dropdown + chat widget)
                      │
            ┌─────────┴──────────┐
       Aha API              eGain Knowledge API v4
-  (egain.aha.io)        (apidev.egain.com, read-only)
+  (egain.aha.io)        (api.egain.cloud, read-only)
 ```
 
 All ECS tasks run in private subnets. Redis is accessible only from `sg-orchestration`. There are no public-facing services other than the ALB and CloudFront.
@@ -740,7 +738,7 @@ All ECS tasks run in private subnets. Redis is accessible only from `sg-orchestr
 
 ### 10.2 Tool Sandboxing — Only Skill Scripts Execute
 
-The agent can only execute code that exists in `config/skills/*/scripts/` and only via the `pmm-skill-client` Lambda. There are three layers of enforcement:
+The agent can only call tool functions defined in `config/skills/*/tools.py`. There are three layers of enforcement:
 
 1. **PydanticAI tool registration:** Only tools defined in `tools.py` files and explicitly passed to `Agent(tools=AHA_TOOLS)` are available. The LLM cannot call arbitrary functions — it can only call registered tools.
 
@@ -802,7 +800,7 @@ New integrations require no graph changes — only a new skill folder.
 | 3 | Slack release summary post | `config/skills/slack/` | `OutputAgentNode` |
 | 3 | Zendesk / Intercom article sync | `config/skills/zendesk/` | `PortalContextAgentNode` |
 
-Adding a new skill folder: create `SKILL.md`, `tools.py` (with tool functions and an `API_CONFIG` constant), `scripts/` (optional helpers), `references/api.md`, then import the skill's `*_TOOLS` list in the target agent node. No Lambda changes needed — `pmm-skill-client` reads auth config from the `api_config` in each invocation payload. See Section 14 of `pmm-ai-agent-guide.md` for step-by-step instructions.
+Adding a new skill folder: create `SKILL.md`, `tools.py` (with tool functions and an `API_CONFIG` constant), `references/api.md`, then import the skill's `*_TOOLS` list in the target agent node. No Lambda changes needed — `pmm-skill-client` reads auth config from the `api_config` in each invocation payload. See Section 14 of `pmm-ai-agent-guide.md` for step-by-step instructions.
 
 ### 11.1 Future: Compound Request Handling
 

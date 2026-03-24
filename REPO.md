@@ -38,21 +38,10 @@ pmm-ai-agent/
 ├── docker-compose.yml          ← Local dev: orchestration + redis
 ├── pyproject.toml              ← Python workspace config, test settings, ruff config
 │
-├── prompts/                    ← All LLM prompt templates — externalized, easy to iterate
-│   ├── COMPACTION_PROMPT.txt   ← Context window compaction summary template
-│   ├── entry_node.txt          ← EntryNode system prompt
-│   ├── release_confirm_node.txt ← ReleaseConfirmNode system prompt
-│   ├── release_context_node.txt ← ReleaseContextAgentNode system prompt (includes {aha_skill})
-│   ├── portal_context_node.txt  ← PortalContextAgentNode system prompt (includes {egain_skill})
-│   ├── plan_gen_node.txt       ← PlanGenNode system prompt
-│   ├── plan_review_node.txt    ← PlanReviewNode system prompt
-│   ├── output_node.txt         ← OutputAgentNode system prompt
-│   ├── output_review_node.txt  ← OutputReviewNode system prompt
-│   ├── adhoc_router_node.txt   ← AdHocRouterNode system prompt
-│   ├── suggest_node.txt        ← SuggestNode system prompt (includes {egain_skill})
-│   ├── update_feedback_node.txt ← UpdateFeedbackNode system prompt
-│   └── refine_node.txt         ← RefineUpdate/RefineCreate system prompt
-│                                  All loaded via: context_loader/prompt_loader.py → load_prompt("name")
+├── prompts/                    ← LLM prompt templates — externalized, easy to iterate
+│   ├── system.txt              ← Main agent system prompt (includes {aha_skill}, {egain_skill}, {pm_name}, etc.)
+│   └── COMPACTION_PROMPT.txt   ← Context window compaction summary template
+│                                  Loaded via: context_loader/prompt_loader.py → load_prompt("system")
 │                                  Templates use {variable} placeholders formatted at runtime
 │
 ├── config/                     ← Skill definitions — versioned with code, never in S3
@@ -75,7 +64,7 @@ pmm-ai-agent/
 
 Each skill is a self-contained folder following the Anthropic skills standard:
 `SKILL.md` (instructions for the LLM) + `tools.py` (Python tool functions with typed params + docstrings) +
-`scripts/` (Python client code) + `references/` (detailed API docs, lazy-loaded).
+`references/` (detailed API docs, lazy-loaded).
 
 **Rule:** Auth credentials NEVER appear in any file under `config/`. They live in
 `AgentDeps`, fetched from AWS Secrets Manager at session start.
@@ -88,14 +77,9 @@ config/
     │   ├── SKILL.md                    ← LLM instructions: tool overview, gotchas, progressive disclosure links
     │   │                                  Read by: skill_loader.py → stored in AgentDeps.aha_skill
     │   │                                  Injected in: release_context_agent.py @agent.instructions
-    │   ├── tools.py                    ← 6 Python tool functions + AHA_API_CONFIG constant
+    │   ├── tools.py                    ← 5 Python tool functions + AHA_API_CONFIG constant
     │   │                                  Imported by: release_context_agent.py via Agent(..., tools=AHA_TOOLS)
-    │   │                                  Tools registered on: ReleaseContextAgentNode agent
-    │   ├── scripts/
-    │   │   └── aha_client.py           ← Aha-specific helpers (AIA path resolution, tag detection)
-    │   │                                  Used by: pmm-skill-client Lambda (optional import)
-    │   │                                  Auth: Declared in AHA_API_CONFIG (type=basic, secret=pmm-agent/aha-api-key)
-    │   │                                  Rate limiting: None — 429 errors propagate to the agent
+    │   │                                  Two-level fetch: lightweight list → full detail on demand
     │   └── references/
     │       ├── api.md                  ← Aha field paths, rate limits, release name formats
     │       ├── aia-releases.md         ← AIA version tag detection, tag-based fetch pattern
@@ -108,7 +92,7 @@ config/
     │   │                                  Injected in: portal_context_agent.py
     │   ├── tools.py                    ← 2 read-only Python tool functions + EGAIN_API_CONFIG constant
     │   │                                  Imported by: portal_context_agent.py via Agent(..., tools=EGAIN_TOOLS)
-    │   │                                  Auth: on-behalf-of-customer (client_app + client_secret from Secrets Manager)
+    │   │                                  Auth: on-behalf-of-customer (client_id + client_secret from Secrets Manager)
     │   │                                  No write operations — agent presents HTML to PM for manual apply
     │   └── references/
     │       ├── api.md                  ← eGain Knowledge API v4 reference, endpoints, auth
@@ -392,7 +376,7 @@ tests/
 │   │   └── test_api_endpoints.py  ← FastAPI TestClient: all endpoints, session isolation
 │   └── tools/
 │       ├── test_tools.py            ← Tool function imports, tool names, descriptions
-│       ├── test_aha_client.py      ← AhaClient: retry logic, rate limiter, response extraction
+│       ├── test_aha_tools.py       ← Aha tool functions: two-level fetch, search, path building
 │       └── test_egain_read_api.py ← eGain read-only API: basic_onbehalf auth, get articles/topics
 │
 ├── functional/                     ← Real graph transitions, LLM mocked. Run: pytest tests/functional/
@@ -596,13 +580,13 @@ POST /sessions/{id}/end (reason="completed"|"restarted")
 | `LOG_LEVEL` | config.py | `debug` | `debug` / `info` / `warn` |
 | `REDIS_URL` | redis_client.py | `redis://localhost:6379` | Full Redis URL |
 | `AHA_SUBDOMAIN` | Lambda env (pmm-skill-client) | `egain` | Aha subdomain (read by Aha path resolver) |
-| `EGAIN_API_HOST` | Lambda env (pmm-skill-client) | `apidev.egain.com` | eGain Knowledge API v4 host |
-| `EGAIN_CLIENT_APP` | Lambda env (pmm-skill-client) | *(from Secrets Manager)* | eGain client_app for basic_onbehalf auth |
+| `EGAIN_API_HOST` | Lambda env (pmm-skill-client) | `api.egain.cloud` | eGain Knowledge API v4 host |
+| `EGAIN_CLIENT_ID` | Lambda env (pmm-skill-client) | *(from Secrets Manager)* | eGain client_id for basic_onbehalf auth |
 | `GEMINI_API_KEY` | config.py | *(your key)* | Local override for default LLM provider |
 | `CLAUDE_API_KEY` | config.py | *(your key)* | Local override for Anthropic provider |
 | `OPENAI_API_KEY` | config.py | *(your key)* | Local override for OpenAI provider |
 | `CONTEXT_BUCKET` | s3_loader.py | `egain-pmm-agent-context-{id}` | S3 bucket name |
-| `AWS_DEFAULT_REGION` | deps.py, s3_loader.py | `us-east-1` | |
+| `AWS_DEFAULT_REGION` | deps.py, s3_loader.py | `us-west-2` | |
 | `AWS_PROFILE` | *(aws cli)* | `pmm-agent-dev` | Local AWS profile |
 | `FRONTEND_ORIGIN_DEV` | main.py CORS | `http://localhost:3000` | |
 | `FRONTEND_ORIGIN_PROD` | main.py CORS | `https://pmm-agent.egain.com` | |
@@ -621,7 +605,7 @@ POST /sessions/{id}/end (reason="completed"|"restarted")
 | S3 (frontend) | `egain-pmm-agent-ui-{account_id}` | Static chat widget |
 | CloudFront | per environment | HTTPS for frontend |
 | Secrets Manager | `pmm-agent/aha-api-key` | Aha Basic auth key |
-| Secrets Manager | `pmm-agent/egain-credentials` | eGain client_app + client_secret (on-behalf-of-customer auth) |
+| Secrets Manager | `pmm-agent/egain-credentials` | eGain client_id + client_secret (on-behalf-of-customer auth) |
 | Secrets Manager | `pmm-agent/gemini-api-key` | Gemini API key (default provider) |
 | Secrets Manager | `pmm-agent/anthropic-api-key` | Anthropic API key |
 | Secrets Manager | `pmm-agent/openai-api-key` | OpenAI API key |
@@ -638,7 +622,7 @@ POST /sessions/{id}/end (reason="completed"|"restarted")
 {"api_key": "..."}
 
 // pmm-agent/egain-credentials (on-behalf-of-customer auth)
-{"client_app": "...", "client_secret": "..."}
+{"client_id": "...", "client_secret": "..."}
 
 // pmm-agent/gemini-api-key (default LLM provider)
 {"api_key": "..."}
@@ -659,7 +643,7 @@ To add, e.g., Jira:
 ```
 1. Create  config/skills/jira/SKILL.md           ← when/how to use Jira tools
 2. Create  config/skills/jira/tools.py           ← Python tool functions + JIRA_API_CONFIG constant
-3. Create  config/skills/jira/scripts/jira_client.py  ← JiraClient class
+3. Create  config/skills/jira/tools.py  ← Jira tool functions + JIRA_API_CONFIG
 4. Create  config/skills/jira/references/api.md  ← field paths, status values
 5. Edit    services/orchestration/tools/deps.py  ← add JiraClient to AgentDeps + build_deps()
 6. Import  JIRA_TOOLS from config/skills/jira/tools.py in the relevant node file
@@ -676,7 +660,7 @@ No graph changes. No new service. No new Dockerfile. No Terraform changes.
 |---|---|
 | `config/skills/aha/tools.py` | `config/skills/aha/SKILL.md` (instruction may need updating), `release_context_agent.py` (imports AHA_TOOLS) |
 | `config/skills/aha/SKILL.md` | `services/orchestration/graph/nodes/release_context_agent.py` (@agent.instructions) |
-| `config/skills/aha/scripts/aha_client.py` | `services/orchestration/tools/deps.py` (uses AhaClient), `tests/unit/tools/test_aha_client.py` |
+| `config/skills/aha/tools.py` | Agent nodes via `Agent(..., tools=AHA_TOOLS)`, `tests/unit/tools/test_aha_tools.py` |
 | `context/company-context.md` | `config/skills/company-context/SKILL.md` (parsing rules), `tests/fixtures/mock_company_context.md` |
 | `services/orchestration/session/models.py` | `services/orchestration/context_loader/s3_loader.py` (produces PMContext), `tests/unit/orchestration/test_models.py` |
 | `services/orchestration/tools/deps.py` | Every graph node file (all use AgentDeps), `tests/unit/orchestration/test_api_endpoints.py` |

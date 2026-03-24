@@ -1,0 +1,7 @@
+#!/bin/bash
+set -e
+echo "→ Linting..."
+ruff check services/ tests/
+echo "→ Unit tests..."
+pytest tests/unit/ -q --tb=short
+echo "✅ Pre-push checks passed"
