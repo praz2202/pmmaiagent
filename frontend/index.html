@@ -182,7 +182,6 @@
             cache: { cacheLocation: 'sessionStorage', storeAuthStateInCookie: false },
         };
         let msalInstance = null;
-        let msalReady = null; // promise that resolves when MSAL is initialized
 
         // Show correct login mode on load
         (function initLoginMode() {
@@ -193,8 +192,7 @@
                 document.getElementById('localLogin').classList.add('hidden');
                 document.getElementById('msalLogin').classList.remove('hidden');
                 if (typeof msal !== 'undefined' && msal.PublicClientApplication) {
-                    const app = new msal.PublicClientApplication(msalConfig);
-                    msalReady = app.initialize().then(() => { msalInstance = app; });
+                    msalInstance = new msal.PublicClientApplication(msalConfig);
                 } else {
                     console.error('MSAL library not loaded');
                 }
@@ -204,7 +202,6 @@
         async function msalLogin() {
             try {
                 document.getElementById('loginError').classList.add('hidden');
-                if (msalReady) await msalReady;
                 if (!msalInstance) { throw new Error('MSAL not initialized. Try refreshing the page.'); }
                 const loginResp = await msalInstance.loginPopup({ scopes: ['User.Read'] });
                 const email = loginResp.account.username;
