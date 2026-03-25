@@ -275,8 +275,13 @@ async def resolve_pm(email: str):
     from context_loader.s3_loader import _get_raw_md, _parse_pm_ownership_table
     raw = _get_raw_md()
     pm_rows = _parse_pm_ownership_table(raw)
+    email_lower = email.lower()
     for row in pm_rows:
-        if row["email"].strip().lower() == email.lower():
+        if row["email"].strip().lower() == email_lower:
+            return {"name": row["name"].strip(), "email": row["email"].strip()}
+        # Also match on egain_username (MSAL returns short UPN like psai@egain.com)
+        egain_user = (row.get("egain_username") or "").strip().lower()
+        if egain_user and egain_user == email_lower:
             return {"name": row["name"].strip(), "email": row["email"].strip()}
     raise HTTPException(status_code=404, detail=f"PM with email '{email}' not found")
 
