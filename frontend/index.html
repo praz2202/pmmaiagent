@@ -590,7 +590,7 @@
         // ── MSAL Config (eGain Azure AD B2C) ────────────────────────
         const msalConfig = {
             auth: {
-                clientId: '01eaedc7-92aa-464e-b2a3-3b627994ac6d',  // intClientId
+                clientId: '4a2d9c44-1663-414a-8d6e-8a42a0e84ccc',  // new client app
                 authority: 'https://tmprod11055874int.b2clogin.com/b7e26fea-53ab-4364-afe8-0f73ece65656/B2C_1A_User_V3_SignIn_OIDC',
                 knownAuthorities: ['tmprod11055874int.b2clogin.com'],
                 redirectUri: window.location.origin + window.location.pathname,
@@ -713,7 +713,10 @@
         async function refreshToken() {
             try {
                 const account = msalInstance.getActiveAccount();
-                if (!account) return null;
+                if (!account) {
+                    handleTokenExpiry();
+                    return null;
+                }
                 const response = await msalInstance.acquireTokenSilent({
                     ...loginRequest,
                     account: account,
@@ -722,8 +725,14 @@
                 return egainToken;
             } catch (e) {
                 console.error('Token refresh failed:', e);
+                handleTokenExpiry();
                 return null;
             }
+        }
+
+        function handleTokenExpiry() {
+            addMessage('assistant', '⚠️ Your session has expired. Please sign in again.');
+            setTimeout(() => logout(), 2000);
         }
 
         function logout() {
