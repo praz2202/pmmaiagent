@@ -200,17 +200,31 @@
         };
         let msalInstance = null;
 
-        // Show correct login mode on load
-        (function initLoginMode() {
+        // Show correct login mode on load + auto-login if MSAL session exists
+        (async function initLoginMode() {
             if (IS_LOCAL) {
                 document.getElementById('localLogin').classList.remove('hidden');
                 document.getElementById('msalLogin').classList.add('hidden');
             } else {
                 document.getElementById('localLogin').classList.add('hidden');
-                document.getElementById('msalLogin').classList.remove('hidden');
                 if (typeof msal !== 'undefined' && msal.PublicClientApplication) {
                     msalInstance = new msal.PublicClientApplication(msalConfig);
+                    // Check for existing MSAL session — auto-login on page reload
+                    const accounts = msalInstance.getAllAccounts();
+                    if (accounts.length > 0) {
+                        const email = accounts[0].username;
+                        try {
+                            const resolveResp = await fetch(`${API_BASE}/pm/resolve?email=${encodeURIComponent(email)}`);
+                            if (resolveResp.ok) {
+                                const pm = await resolveResp.json();
+                                enterChat(pm.name);
+                                return; // skip showing login screen
+                            }
+                        } catch (e) { /* fall through to login screen */ }
+                    }
+                    document.getElementById('msalLogin').classList.remove('hidden');
                 } else {
+                    document.getElementById('msalLogin').classList.remove('hidden');
                     console.error('MSAL library not loaded');
                 }
             }
@@ -269,8 +283,10 @@
             document.getElementById('loginScreen').classList.remove('hidden');
             document.getElementById('messages').innerHTML = '';
             if (msalInstance) {
-                const accounts = msalInstance.getAllAccounts();
-                if (accounts.length > 0) msalInstance.logoutPopup({ account: accounts[0] }).catch(()=>{});
+                // Clear MSAL cache so page reload shows login screen (no popup)
+                sessionStorage.clear();
+                document.getElementById('msalLogin').classList.remove('hidden');
+                document.getElementById('accessDenied').classList.add('hidden');
             }
         }
         async function startSession(pmName) {
