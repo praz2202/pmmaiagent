@@ -34,6 +34,19 @@ Each release notes article covers ONE feature and follows this format:
 7. PM can edit/correct → agent updates → PM approves → next feature
 8. Repeat until all features have release notes
 
+## Where release notes go in the portal
+
+Release notes articles go under release-specific sub-topics:
+- **Unreleased:** "Upcoming Features for {product} {version}" (e.g. "Upcoming Features for AI Agent 1.2.0")
+- **Released:** "New Features for {product} {version}" (e.g. "New Features for AI Agent 1.1.0")
+
+When creating release notes:
+- Check if the release topic already exists using `get_child_topics`
+- If "Upcoming Features for..." exists → add articles there
+- If "New Features for..." exists → add articles there
+- If neither exists → suggest creating a new topic under the main product topic
+- If release is shipped and topic still says "Upcoming" → recommend renaming to "New Features..."
+
 ## Content guidelines
 
 - **Overview**: concise, factual. What the feature does, not marketing language.

@@ -67,9 +67,21 @@ async def _get_egain_token() -> str:
         return token
 
 
-async def egain_api_call(method: str, path: str, params: dict | None = None) -> Any:
-    """Call the eGain Knowledge API. Uses OAuth Client Credentials token."""
-    token = await _get_egain_token()
+async def egain_api_call(
+    method: str,
+    path: str,
+    params: dict | None = None,
+    session_id: str | None = None,
+) -> Any:
+    """Call the eGain Knowledge API.
+    Uses PM's OAuth token (from login) if available.
+    Falls back to Client Credentials token for topic/article list operations.
+    """
+    # Try PM's user token first (enables article-by-ID access)
+    from tools.deps import get_egain_token
+    user_token = get_egain_token(session_id) if session_id else None
+    token = user_token or await _get_egain_token()
+
     base_url = "https://api.egain.cloud/knowledge/portalmgr/v4"
 
     async with httpx.AsyncClient() as client:

@@ -1,5 +1,5 @@
 ---
-name: portal-articles
+name: portal_articles
 description: >
   Browsing, comparing, and suggesting updates/creates for eGain portal articles.
   Use when a PM asks to update the portal, check what's in the portal, create
@@ -9,15 +9,31 @@ description: >
 
 # Portal Articles Skill
 
-## Two-level fetch
+## Presenting topics
 
-**Level 1 — Article titles + summaries:** Fetch article metadata including title
-and `article_summary`. Use to decide which articles are candidates for update.
+When showing portal topics to the PM, always include:
+- **articleCountInTopic** — articles directly in that topic (not in sub-topics)
+- **articleCountInTopicTree** — total articles including all sub-topics
+- The parent topic itself has articles too — don't skip it. For example,
+  "AI Agent for Contact Center" has 25 articles directly in it plus 42 more in sub-topics.
 
-**Level 2 — Full content:** Fetch full HTML body only for articles that need it:
-- Title + summary clearly match → fetch full content to see exactly what to update
-- Title + summary unclear → fetch to read and decide
-- No match → recommend create (no fetch needed)
+Example format:
+```
+AI Agent for Contact Center (25 articles, 67 total with sub-topics)
+  ├── Connectors (0 articles, 8 in sub-topics)
+  ├── New Features for AI Agent 1.1.0 (5 articles)
+  └── Upcoming Features for AI Agent 1.2.0 (6 articles)
+```
+
+## Available data
+
+Currently you can:
+- **Get topic tree** — `get_child_topics` returns topic names, article counts, sub-topic IDs
+- **List articles in a topic** — `browse_portal_topic` returns article titles, IDs, created/modified info
+
+You CANNOT read full article content yet (requires user-scoped auth, coming soon).
+Make update/create decisions based on **article titles and topic structure** for now.
+When full article reading is available, you can refine suggestions with actual content comparison.
 
 ## Missing article summaries
 

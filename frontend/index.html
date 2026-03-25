@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>eGain PMM AI Agent</title>
+    <!-- MSAL for eGain OAuth login -->
+    <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3/lib/msal-browser.min.js"></script>
     <!-- Markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
@@ -310,6 +312,30 @@
             position: relative;
         }
 
+        /* Tool activity indicator */
+        .tool-activity {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.375rem;
+            margin-bottom: 0.375rem;
+        }
+
+        .tool-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0.5rem;
+            background: var(--bg-tertiary);
+            border-radius: 9999px;
+            font-size: 0.6875rem;
+            color: var(--text-tertiary);
+            font-family: var(--font-mono);
+        }
+
+        .tool-chip svg {
+            color: var(--brand);
+        }
+
         .btn-copy {
             display: flex;
             align-items: center;
@@ -551,25 +577,128 @@
         marked.setOptions({ breaks: true, gfm: true });
 
         // ── Config ──────────────────────────────────────────────────
-        const API_BASE = 'http://localhost:8000';
-        const EGAIN_TOKEN_URL = 'https://login.egain.cloud/global/f51302dd-7036-41b5-b619-e1a52a67c780/oauth2/v2.0/token';
-        const EGAIN_CLIENT_ID = '7070ff53-f30b-4dfe-96df-1d996384e4a5';
-        // Note: In production, use MSAL popup/redirect flow instead of storing client_secret
-        const EGAIN_SCOPE = 'https://api.egain.cloud/auth/.default';
+        // Backend: localhost for dev, will change for prod
+        const API_BASE = window.location.hostname === 'dev.controlflows.com'
+            ? 'http://localhost:8000'  // dev — backend runs locally
+            : 'http://localhost:8000'; // local — same
 
         let sessionId = null;
         let egainToken = null;
         let currentUser = null;
+        let msalInstance = null;
+
+        // ── MSAL Config (eGain Azure AD B2C) ────────────────────────
+        const msalConfig = {
+            auth: {
+                clientId: '01eaedc7-92aa-464e-b2a3-3b627994ac6d',  // intClientId
+                authority: 'https://tmprod11055874int.b2clogin.com/b7e26fea-53ab-4364-afe8-0f73ece65656/B2C_1A_User_V3_SignIn_OIDC',
+                knownAuthorities: ['tmprod11055874int.b2clogin.com'],
+                redirectUri: window.location.origin + window.location.pathname,
+                authorityMetadata: JSON.stringify({
+                    authorization_endpoint: 'https://tmprod11055874int.b2clogin.com/b7e26fea-53ab-4364-afe8-0f73ece65656/B2C_1A_User_V3_SignIn_OIDC/oauth2/v2.0/authorize',
+                    token_endpoint: 'https://tmprod11055874int.b2clogin.com/b7e26fea-53ab-4364-afe8-0f73ece65656/B2C_1A_User_V3_SignIn_OIDC/oauth2/v2.0/token',
+                    issuer: 'https://tmprod11055874int.b2clogin.com/b7e26fea-53ab-4364-afe8-0f73ece65656/B2C_1A_User_V3_SignIn_OIDC/v2.0/',
+                    jwks_uri: 'https://tmprod11055874int.b2clogin.com/b7e26fea-53ab-4364-afe8-0f73ece65656/B2C_1A_User_V3_SignIn_OIDC/discovery/v2.0/keys',
+                }),
+                navigateToLoginRequestUrl: true,
+            },
+            cache: { cacheLocation: 'sessionStorage' },
+            system: {
+                allowRedirectInIframe: true,
+                loggerOptions: {
+                    loggerCallback: (level, message, containsPii) => {
+                        if (!containsPii) console.log(`MSAL [${level}]: ${message}`);
+                    },
+                    piiLoggingEnabled: false,
+                    logLevel: msal.LogLevel.Warning,
+                },
+            },
+        };
+
+        const loginRequest = {
+            scopes: ['https://tmprod11055874int.onmicrosoft.com/12bf53d5-dc02-429f-bc2b-d8707c60e69d/.default'],
+            extraQueryParameters: {
+                domain_hint: 'ebrain.egain.com',
+            },
+        };
+
+        // ── MSAL Init ───────────────────────────────────────────────
+        async function initMsal() {
+            msalInstance = new msal.PublicClientApplication(msalConfig);
+            await msalInstance.initialize();
+
+            // Handle redirect response (if coming back from login)
+            const response = await msalInstance.handleRedirectPromise();
+            if (response?.account) {
+                console.log('Login redirect response received');
+                msalInstance.setActiveAccount(response.account);
+                await onLoginSuccess(response.accessToken);
+            } else {
+                // Check for existing session
+                const accounts = msalInstance.getAllAccounts();
+                if (accounts.length > 0) {
+                    msalInstance.setActiveAccount(accounts[0]);
+                    try {
+                        const tokenResp = await msalInstance.acquireTokenSilent({
+                            ...loginRequest,
+                            account: accounts[0],
+                        });
+                        await onLoginSuccess(tokenResp.accessToken);
+                    } catch (e) {
+                        console.log('Silent token failed, need interactive login');
+                    }
+                }
+            }
+        }
 
         // ── Auth ────────────────────────────────────────────────────
-        // For now: simple popup login simulation
-        // TODO: Replace with MSAL redirect/popup flow
         async function login() {
-            const name = prompt('Enter your name (e.g. Prasanth Sai):');
-            if (!name) return;
+            try {
+                document.getElementById('loginError').textContent = 'Signing in...';
+                document.getElementById('loginError').classList.remove('hidden');
 
-            currentUser = name;
-            document.getElementById('userName').textContent = name;
+                // Ensure MSAL is initialized
+                if (!msalInstance) {
+                    await initMsal();
+                }
+
+                const response = await msalInstance.loginPopup(loginRequest);
+                msalInstance.setActiveAccount(response.account);
+                await onLoginSuccess(response.accessToken);
+            } catch (err) {
+                console.error('Login failed:', err);
+                document.getElementById('loginError').textContent = `Login failed: ${err.message}`;
+                document.getElementById('loginError').classList.remove('hidden');
+            }
+        }
+
+        async function onLoginSuccess(token) {
+            egainToken = token;
+            console.log('eGain token acquired');
+
+            // Get user details from eGain
+            try {
+                const resp = await fetch('https://api.egain.cloud/knowledge/portalmgr/v3/portals/user', {
+                    headers: {
+                        'Accept-Language': 'en-US',
+                        'Authorization': `Bearer ${token}`,
+                    },
+                });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    const user = data?.user?.[0];
+                    currentUser = user?.name || user?.firstName + ' ' + user?.lastName || 'PM';
+                } else {
+                    // Fallback: get name from MSAL account
+                    const account = msalInstance.getActiveAccount();
+                    currentUser = account?.name || account?.username || 'PM';
+                }
+            } catch (e) {
+                const account = msalInstance.getActiveAccount();
+                currentUser = account?.name || account?.username || 'PM';
+            }
+
+            document.getElementById('userName').textContent = currentUser;
 
             // Show chat, hide login
             document.getElementById('loginScreen').classList.add('hidden');
@@ -577,18 +706,48 @@
             chatScreen.classList.remove('hidden');
             chatScreen.style.display = 'flex';
 
-            // Start session
-            await startSession(name);
+            // Start session with PM name
+            await startSession(currentUser);
+        }
+
+        async function refreshToken() {
+            try {
+                const account = msalInstance.getActiveAccount();
+                if (!account) return null;
+                const response = await msalInstance.acquireTokenSilent({
+                    ...loginRequest,
+                    account: account,
+                });
+                egainToken = response.accessToken;
+                return egainToken;
+            } catch (e) {
+                console.error('Token refresh failed:', e);
+                return null;
+            }
         }
 
         function logout() {
+            if (sessionId) {
+                fetch(`${API_BASE}/sessions/${sessionId}/end`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ reason: 'logout' }),
+                }).catch(() => {});
+            }
             sessionId = null;
             egainToken = null;
             currentUser = null;
             document.getElementById('chatScreen').style.display = 'none';
             document.getElementById('loginScreen').classList.remove('hidden');
             document.getElementById('messages').innerHTML = '';
+            document.getElementById('loginError').classList.add('hidden');
+            if (msalInstance) {
+                msalInstance.logoutPopup({ postLogoutRedirectUri: window.location.origin + window.location.pathname });
+            }
         }
+
+        // Init MSAL on page load
+        initMsal().catch(err => console.warn('MSAL init:', err.message));
 
         // ── Session ─────────────────────────────────────────────────
         async function startSession(pmName) {
@@ -597,7 +756,10 @@
             try {
                 const resp = await fetch(`${API_BASE}/sessions/start`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...(egainToken ? { 'X-Egain-Token': egainToken } : {}),
+                    },
                     body: JSON.stringify({ pm_name: pmName }),
                 });
                 removeTyping();
@@ -632,14 +794,19 @@
             setStatus('Thinking...');
 
             try {
+                // Refresh token if needed
+                await refreshToken();
                 const resp = await fetch(`${API_BASE}/sessions/${sessionId}/respond`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...(egainToken ? { 'X-Egain-Token': egainToken } : {}),
+                    },
                     body: JSON.stringify({ input: text }),
                 });
                 const data = await resp.json();
                 removeTyping();
-                addMessage('assistant', data.message);
+                addMessage('assistant', data.message, data.tools_called);
                 setStatus('');
             } catch (err) {
                 removeTyping();
@@ -652,7 +819,7 @@
         }
 
         // ── UI Helpers ──────────────────────────────────────────────
-        function addMessage(role, text) {
+        function addMessage(role, text, toolsCalled) {
             const messages = document.getElementById('messages');
             const initials = role === 'assistant' ? 'AI' : (currentUser || 'PM').split(' ').map(n => n[0]).join('').toUpperCase();
 
@@ -663,6 +830,24 @@
             const renderedContent = role === 'assistant'
                 ? marked.parse(text)
                 : escapeHtml(text);
+
+            // Tool activity chips (only for assistant with tool calls)
+            let toolChips = '';
+            if (role === 'assistant' && toolsCalled && toolsCalled.length > 0) {
+                const chips = toolsCalled.map(tc => {
+                    const argStr = Object.entries(tc.args || {})
+                        .filter(([k,v]) => v)
+                        .map(([k,v]) => `${k}=${v}`)
+                        .join(', ');
+                    return `<span class="tool-chip">
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
+                        </svg>
+                        ${tc.tool}${argStr ? '(' + argStr + ')' : ''}
+                    </span>`;
+                }).join('');
+                toolChips = `<div class="tool-activity">${chips}</div>`;
+            }
 
             const copyBtn = role === 'assistant'
                 ? `<button class="btn-copy" onclick="copyMessage(this, ${JSON.stringify(text).replace(/"/g, '&quot;')})">
@@ -677,6 +862,7 @@
             div.innerHTML = `
                 <div class="message-avatar">${initials}</div>
                 <div class="message-wrapper">
+                    ${toolChips}
                     <div class="message-content">${renderedContent}</div>
                     ${copyBtn}
                 </div>

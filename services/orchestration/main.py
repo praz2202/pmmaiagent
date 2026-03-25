@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import structlog
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 
@@ -95,9 +95,10 @@ async def health():
 
 
 @app.post("/sessions/start")
-async def start_session(req: StartRequest):
+async def start_session(req: StartRequest, x_egain_token: str | None = Header(None)):
     from agent import pmm_agent
     from compaction import count_message_chars
+    from tools.deps import set_egain_token
 
     pm_context = load_company_context(req.pm_name)
     session_id = str(uuid.uuid4())
@@ -107,6 +108,11 @@ async def start_session(req: StartRequest):
         pm_context=pm_context,
         start_time=datetime.now(timezone.utc).isoformat(),
     )
+
+    # Store PM's eGain token (if provided from frontend login)
+    if x_egain_token:
+        set_egain_token(session_id, x_egain_token)
+
     deps = build_deps(pm_context, session_id)
 
     # First agent turn — agent greets the PM
@@ -124,17 +130,27 @@ async def start_session(req: StartRequest):
         return {"session_id": session_id, "message": f"Error: {str(e)}", "awaiting_input": True}
 
     await session_manager.save(session_id, state)
-    return {"session_id": session_id, "message": result.output, "awaiting_input": True}
+    return {
+        "session_id": session_id,
+        "message": result.output,
+        "awaiting_input": True,
+        "tools_called": _extract_tool_calls(result),
+    }
 
 
 @app.post("/sessions/{session_id}/respond")
-async def respond(session_id: str, req: RespondRequest):
+async def respond(session_id: str, req: RespondRequest, x_egain_token: str | None = Header(None)):
     from agent import pmm_agent
     from compaction import maybe_compact, count_message_chars
+    from tools.deps import set_egain_token
 
     state = await session_manager.get(session_id)
     if not state:
         raise HTTPException(status_code=404, detail="Session not found")
+
+    # Refresh PM's eGain token (frontend sends it with each request)
+    if x_egain_token:
+        set_egain_token(session_id, x_egain_token)
 
     deps = build_deps(state.pm_context, session_id)
 
@@ -158,7 +174,26 @@ async def respond(session_id: str, req: RespondRequest):
         return {"message": f"Error: {str(e)}. You can retry.", "awaiting_input": True}
 
     await session_manager.save(session_id, state)
-    return {"message": result.output, "awaiting_input": True}
+    return {
+        "message": result.output,
+        "awaiting_input": True,
+        "tools_called": _extract_tool_calls(result),
+    }
+
+
+def _extract_tool_calls(result) -> list[dict]:
+    """Extract tool call names and args from the agent result."""
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
+    calls = []
+    for msg in result.all_messages():
+        if isinstance(msg, ModelResponse):
+            for part in msg.parts:
+                if isinstance(part, ToolCallPart):
+                    calls.append({
+                        "tool": part.tool_name.replace("default_api:", ""),
+                        "args": part.args if isinstance(part.args, dict) else {},
+                    })
+    return calls
 
 
 @app.get("/sessions/{session_id}/status")
@@ -182,8 +217,10 @@ async def end_session(session_id: str, req: EndRequest):
         raise HTTPException(status_code=404, detail="Session not found")
 
     from session.session_history import save_session_record
+    from tools.deps import clear_egain_token
     await save_session_record(state, status=req.reason)
     await session_manager.delete(session_id)
+    clear_egain_token(session_id)
     return {"ended": True, "session_id": session_id, "status": req.reason}
 
 

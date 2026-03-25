@@ -47,6 +47,7 @@ async def get_child_topics(
         "GET",
         f"/portals/{portal_id}/topics/{short_id}",
         params={"level": "1", "$lang": "en-US"},
+        session_id=ctx.deps.session_id,
     )
 
 
@@ -69,6 +70,7 @@ async def browse_portal_topic(
         "GET",
         f"/portals/{portal_id}/articles",
         params={"$filter[topicId]": short_id},
+        session_id=ctx.deps.session_id,
     )
 
 
@@ -88,11 +90,12 @@ async def read_portal_article(
     return await egain_api_call(
         "GET",
         f"/portals/{portal_id}/articles/{article_id}",
+        session_id=ctx.deps.session_id,
     )
 
 
 PORTAL_ARTICLES_TOOLS = [
     get_child_topics,
     browse_portal_topic,
-    read_portal_article,
+    read_portal_article,  # requires PM's user token — falls back to Client Credentials (may 403)
 ]
