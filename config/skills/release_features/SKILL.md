@@ -15,7 +15,9 @@ description: >
 Documents Impacted tags. Present to PM for review. PM can ignore features.
 
 **Level 2 — Full content (on demand):** Only after PM confirms which features
-to work with. Fetch full description + attachments for specific features.
+to work with. Fetch full description + attachments + requirements for specific features.
+Requirements are sub-tasks under a feature — include them when writing release notes
+or understanding the full scope of a feature.
 
 ## How release tracking works
 

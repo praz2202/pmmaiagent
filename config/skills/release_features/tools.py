@@ -44,24 +44,32 @@ async def fetch_release_features(
     """
     if tag:
         path = f"/products/{product_key}/features"
-        params = {"tag": tag, "fields": "name,custom_fields,tags,integration_fields"}
+        tag_clean = tag.strip()
+        params = {"tag": tag_clean, "fields": "name,custom_fields,tags,integration_fields"}
+        result = await aha_api_call("GET", path, params)
+        # Some Aha tags have trailing spaces — retry with space if no results
+        if not (result.get("features") if isinstance(result, dict) else None):
+            params["tag"] = tag_clean + " "
+            result = await aha_api_call("GET", path, params)
+        return result
     else:
         path = f"/releases/{release_id}/features"
         params = {"fields": "name,custom_fields,tags,integration_fields"}
-    return await aha_api_call("GET", path, params)
+        return await aha_api_call("GET", path, params)
 
 
 # ── Level 2: Full detail ─────────────────────────────────────────────────────
 
 async def get_feature_detail(ctx: RunContext[AgentDeps], feature_id: str) -> Any:
     """Get FULL content for a single feature — description, attachments,
-    all custom fields. Only call after PM confirms which features to work with.
+    all custom fields, and requirements (sub-tasks).
+    Only call after PM confirms which features to work with.
 
     Args:
         feature_id: Feature ID, e.g. 'AIA-42' or 'ECAI-123'.
     """
     return await aha_api_call("GET", f"/features/{feature_id}", {
-        "fields": "name,description,custom_fields,tags,attachments,integration_fields",
+        "fields": "name,description,custom_fields,tags,attachments,integration_fields,requirements",
     })
 
 

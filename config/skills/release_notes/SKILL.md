@@ -77,6 +77,13 @@ Example:
 NEVER fabricate or guess the Jira link. If `integration_fields` has no Jira entry,
 note "Jira link not available" and move on.
 
+## Requirements (sub-tasks)
+
+Features may have requirements (sub-tasks) in the `requirements` array returned by
+`get_feature_detail`. When writing release notes, consider the requirements to understand
+the full scope of the feature. Each requirement has a name and reference_num (e.g. ECAI-300-1).
+Include relevant requirement details in the Overview and Release Notes sections.
+
 ## Gotchas
 
 - Generate release notes ONE feature at a time — don't batch
