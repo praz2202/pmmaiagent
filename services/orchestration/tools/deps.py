@@ -28,10 +28,15 @@ class LambdaClient:
     One instance shared across all sessions (process-level singleton).
     """
     def __init__(self):
-        self._client = boto3.client(
-            "lambda",
-            region_name=os.environ.get("AWS_DEFAULT_REGION", "us-west-2"),
-        )
+        self._client = None
+
+    def _get_client(self):
+        if self._client is None:
+            self._client = boto3.client(
+                "lambda",
+                region_name=os.environ.get("AWS_DEFAULT_REGION", "us-west-2"),
+            )
+        return self._client
 
     async def invoke_skill_lambda(self, lambda_name: str, payload: dict) -> dict:
         """Invoke the pmm-skill-client Lambda synchronously (via thread pool).
@@ -41,7 +46,7 @@ class LambdaClient:
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(
             None,
-            lambda: self._client.invoke(
+            lambda: self._get_client().invoke(
                 FunctionName=lambda_name,
                 InvocationType="RequestResponse",
                 Payload=json.dumps(payload).encode(),

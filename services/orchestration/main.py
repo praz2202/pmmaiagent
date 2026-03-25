@@ -31,8 +31,11 @@ session_manager = SessionManager()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # STARTUP
-    from session.session_history import ensure_table_exists
-    ensure_table_exists()  # Create DynamoDB table if local
+    import os
+    if os.getenv("DYNAMODB_ENDPOINT"):
+        # Only auto-create table in local dev (DynamoDB Local)
+        from session.session_history import ensure_table_exists
+        ensure_table_exists()
     logger.info("startup_complete")
     yield
     # SHUTDOWN

@@ -64,18 +64,19 @@ def _get_raw_md() -> str:
 
 
 def _fetch_raw() -> str:
-    """Fetch from S3 in prod, local file in dev."""
-    app_env = os.getenv("APP_ENV", "local")
-
-    if app_env == "local":
-        # Read from local file
-        local_path = Path(__file__).parents[3] / "context" / "company-context.md"
+    """Fetch from local file (dev/prod with volume mount) or S3 (prod without volume)."""
+    # Try local file first (works in both dev and prod with Docker volume mount)
+    local_path = Path(__file__).parents[3] / "context" / "company-context.md"
+    if local_path.exists():
         return local_path.read_text(encoding="utf-8")
-    else:
-        # Read from S3
-        bucket = os.environ["CONTEXT_BUCKET"]
+
+    # Fall back to S3 for prod deployments without volume mount
+    bucket = os.environ.get("CONTEXT_BUCKET")
+    if bucket:
         s3 = boto3.client("s3")
         return s3.get_object(Bucket=bucket, Key="company-context.md")["Body"].read().decode()
+
+    raise FileNotFoundError(f"company-context.md not found locally ({local_path}) or in S3")
 
 
 # ── Parsing ──────────────────────────────────────────────────────────────────
