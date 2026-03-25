@@ -676,26 +676,14 @@
             egainToken = token;
             console.log('eGain token acquired');
 
-            // Get user details from eGain
-            try {
-                const resp = await fetch('https://api.egain.cloud/knowledge/portalmgr/v3/portals/user', {
-                    headers: {
-                        'Accept-Language': 'en-US',
-                        'Authorization': `Bearer ${token}`,
-                    },
-                });
-                if (resp.ok) {
-                    const data = await resp.json();
-                    const user = data?.user?.[0];
-                    currentUser = user?.name || user?.firstName + ' ' + user?.lastName || 'PM';
-                } else {
-                    // Fallback: get name from MSAL account
-                    const account = msalInstance.getActiveAccount();
-                    currentUser = account?.name || account?.username || 'PM';
-                }
-            } catch (e) {
-                const account = msalInstance.getActiveAccount();
-                currentUser = account?.name || account?.username || 'PM';
+            // Get user name from MSAL account
+            const account = msalInstance.getActiveAccount();
+            console.log('MSAL account:', account);
+            currentUser = account?.name || account?.idTokenClaims?.name || account?.username || 'PM';
+
+            // If name looks like an email, extract the first part
+            if (currentUser.includes('@')) {
+                currentUser = currentUser.split('@')[0];
             }
 
             document.getElementById('userName').textContent = currentUser;
