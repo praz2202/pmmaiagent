@@ -91,6 +91,14 @@
         .btn-login { padding: 0.75rem 2rem; background: var(--brand); color: white; border: none; border-radius: var(--radius-lg); font-size: 0.9375rem; font-weight: 500; cursor: pointer; transition: background 0.15s; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
         .btn-login:hover { background: var(--brand-hover); }
         .status-bar { padding: 0.25rem 1.5rem; font-size: 0.6875rem; color: var(--text-tertiary); text-align: center; }
+        .access-denied { display: flex; flex-direction: column; align-items: center; gap: 1rem; padding: 2rem; background: #FEF2F2; border: 1px solid #FECACA; border-radius: var(--radius-xl); max-width: 420px; text-align: center; }
+        .access-denied-icon { width: 48px; height: 48px; background: #FEE2E2; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+        .access-denied-icon svg { color: #DC2626; }
+        .access-denied h3 { font-size: 1.125rem; font-weight: 600; color: #991B1B; }
+        .access-denied p { font-size: 0.875rem; color: #7F1D1D; line-height: 1.5; }
+        .access-denied .contact { font-size: 0.8125rem; color: var(--text-secondary); margin-top: 0.25rem; }
+        .access-denied .btn-retry { padding: 0.5rem 1.25rem; background: var(--bg-primary); border: 1px solid var(--border-secondary); border-radius: var(--radius); font-size: 0.8125rem; cursor: pointer; color: var(--text-secondary); transition: all 0.15s; }
+        .access-denied .btn-retry:hover { background: var(--bg-tertiary); }
         .hidden { display: none !important; }
     </style>
 </head>
@@ -118,6 +126,15 @@
             </button>
         </div>
         <p id="loginError" class="hidden" style="color: var(--error); font-size: 0.8125rem;"></p>
+        <div id="accessDenied" class="access-denied hidden">
+            <div class="access-denied-icon">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line></svg>
+            </div>
+            <h3>Access Restricted</h3>
+            <p>Your account is not authorized to use the PMM AI Agent. This tool is available to eGain Product Management team members only.</p>
+            <p class="contact">Please contact <strong>Prasanth Sai</strong> (psai@egain.com) for access.</p>
+            <button class="btn-retry" onclick="retryLogin()">Try a different account</button>
+        </div>
     </div>
     <div id="chatScreen" class="hidden" style="display:none; flex-direction:column; height:100vh;">
         <div class="header">
@@ -202,20 +219,33 @@
         async function msalLogin() {
             try {
                 document.getElementById('loginError').classList.add('hidden');
+                document.getElementById('accessDenied').classList.add('hidden');
                 if (!msalInstance) { throw new Error('MSAL not initialized. Try refreshing the page.'); }
                 const loginResp = await msalInstance.loginPopup({ scopes: ['User.Read'] });
                 const email = loginResp.account.username;
                 // Resolve PM name from email via backend
                 const resolveResp = await fetch(`${API_BASE}/pm/resolve?email=${encodeURIComponent(email)}`);
                 if (!resolveResp.ok) {
-                    const err = await resolveResp.json();
-                    throw new Error(err.detail || 'Your email is not registered as a PM.');
+                    // Show access denied UI
+                    document.getElementById('msalLogin').classList.add('hidden');
+                    document.getElementById('accessDenied').classList.remove('hidden');
+                    return;
                 }
                 const pm = await resolveResp.json();
                 enterChat(pm.name);
             } catch (err) {
+                if (err.message && err.message.includes('user_cancelled')) return;
                 document.getElementById('loginError').textContent = err.message || 'Sign-in failed.';
                 document.getElementById('loginError').classList.remove('hidden');
+            }
+        }
+
+        function retryLogin() {
+            document.getElementById('accessDenied').classList.add('hidden');
+            document.getElementById('msalLogin').classList.remove('hidden');
+            if (msalInstance) {
+                const accounts = msalInstance.getAllAccounts();
+                if (accounts.length > 0) msalInstance.logoutPopup({ account: accounts[0] }).catch(()=>{});
             }
         }
 
