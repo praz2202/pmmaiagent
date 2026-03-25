@@ -66,7 +66,8 @@ def _get_raw_md() -> str:
 def _fetch_raw() -> str:
     """Fetch from local file (dev/prod with volume mount) or S3 (prod without volume)."""
     # Try local file first (works in both dev and prod with Docker volume mount)
-    local_path = Path(__file__).parents[3] / "context" / "company-context.md"
+    _app_dir = Path(__file__).parents[1]
+    local_path = _app_dir / "context" / "company-context.md" if (_app_dir / "context").exists() else Path(__file__).parents[3] / "context" / "company-context.md"
     if local_path.exists():
         return local_path.read_text(encoding="utf-8")
 

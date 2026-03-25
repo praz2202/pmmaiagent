@@ -9,10 +9,10 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-# skills are at: pmm-ai-agent/config/skills/
-# this file is at: pmm-ai-agent/services/orchestration/context_loader/skill_loader.py
-# so we go up 3 levels to reach the project root
-SKILLS_DIR = Path(__file__).parents[3] / "config" / "skills"
+# In Docker: /app/config/skills (volume mount)
+# Locally: 3 levels up from this file
+_APP_DIR = Path(__file__).parents[1]
+SKILLS_DIR = _APP_DIR / "config" / "skills" if (_APP_DIR / "config" / "skills").exists() else Path(__file__).parents[3] / "config" / "skills"
 
 
 @lru_cache(maxsize=None)

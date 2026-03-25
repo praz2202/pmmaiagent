@@ -9,9 +9,10 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-# prompts are at: pmm-ai-agent/prompts/
-# this file is at: pmm-ai-agent/services/orchestration/context_loader/prompt_loader.py
-PROMPTS_DIR = Path(__file__).parents[3] / "prompts"
+# In Docker: /app/prompts (volume mount)
+# Locally: pmm-ai-agent/prompts/ (3 levels up from this file)
+_APP_DIR = Path(__file__).parents[1]  # /app or services/orchestration
+PROMPTS_DIR = _APP_DIR / "prompts" if (_APP_DIR / "prompts").exists() else Path(__file__).parents[3] / "prompts"
 
 
 @lru_cache(maxsize=None)
