@@ -11,6 +11,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
+import logfire
 import structlog
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,10 +22,21 @@ from session.redis_client import SessionManager
 from session.models import PMAgentState
 from context_loader.s3_loader import load_company_context, invalidate_cache
 from tools.deps import build_deps
+from settings import LOGFIRE_TOKEN, APP_ENV
 
 logger = structlog.get_logger()
 session_manager = SessionManager()
 
+# ── Logfire ───────────────────────────────────────────────────────────────────
+
+logfire.configure(
+    token=LOGFIRE_TOKEN or None,
+    service_name="pmm-ai-agent",
+    environment=APP_ENV,
+    send_to_logfire='if-token-present',
+    inspect_arguments=False,
+)
+logfire.instrument_pydantic_ai()
 
 # ── Lifespan ─────────────────────────────────────────────────────────────────
 
@@ -43,6 +55,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PMM AI Agent", version="1.0.0", lifespan=lifespan)
+logfire.instrument_fastapi(app)
 
 app.add_middleware(
     CORSMiddleware,
@@ -112,23 +125,29 @@ async def start_session(req: StartRequest):
         start_time=datetime.now(timezone.utc).isoformat(),
     )
 
-    # Store PM's eGain token (if provided from frontend login)
-
     deps = build_deps(pm_context, session_id)
 
     # First agent turn — agent greets the PM
-    try:
-        result = await pmm_agent.run(
-            "PM has started a new session.",
-            deps=deps,
-            model=deps.llm_model,
-            model_settings=deps.model_settings,
-        )
-        state.message_history = list(result.all_messages())
-        state.total_chars = count_message_chars(state.message_history)
-    except Exception as e:
-        logger.error("agent_error", session_id=session_id, error=str(e))
-        return {"session_id": session_id, "message": f"Error: {str(e)}", "awaiting_input": True}
+    with logfire.span(
+        'agent turn',
+        session_id=session_id,
+        pm_name=req.pm_name,
+        turn='start',
+        user_input='PM has started a new session.',
+    ):
+        try:
+            result = await pmm_agent.run(
+                "PM has started a new session.",
+                deps=deps,
+                model=deps.llm_model,
+                model_settings=deps.model_settings,
+            )
+            state.message_history = list(result.all_messages())
+            state.total_chars = count_message_chars(state.message_history)
+            logfire.info('agent response', agent_output=result.output[:500])
+        except Exception as e:
+            logger.error("agent_error", session_id=session_id, error=str(e))
+            return {"session_id": session_id, "message": f"Error: {str(e)}", "awaiting_input": True}
 
     await session_manager.save(session_id, state)
     return {
@@ -172,58 +191,68 @@ async def respond(session_id: str, req: RespondRequest):
         """SSE stream: sends tool call events during agent execution, then final result."""
         from pydantic_ai.messages import ToolCallPart
 
-        try:
-            async with pmm_agent.iter(
-                req.input,
-                message_history=state.message_history,
-                deps=deps,
-                model=deps.llm_model,
-                model_settings=deps.model_settings,
-            ) as agent_run:
-                async for node in agent_run:
-                    node_name = type(node).__name__
-
-                    if node_name == 'CallToolsNode' and hasattr(node, 'model_response'):
-                        # Extract tool calls from the model response
-                        for part in node.model_response.parts:
-                            if isinstance(part, ToolCallPart):
-                                tool = part.tool_name.replace('default_api:', '')
-                                skill = TOOL_TO_SKILL.get(tool, '')
-                                args = part.args if isinstance(part.args, dict) else {}
-                                # Build a readable description
-                                arg_str = ', '.join(f'{k}={v}' for k, v in args.items() if v)
-                                yield f"data: {json_mod.dumps({'type': 'tool_call', 'tool': tool, 'skill': skill, 'args': arg_str})}\n\n"
-
-                    elif node_name == 'ModelRequestNode':
-                        yield f"data: {json_mod.dumps({'type': 'thinking'})}\n\n"
-
-            result = agent_run.result
-            state.message_history = list(result.all_messages())
-            state.total_chars = count_message_chars(state.message_history)
-            await session_manager.save(session_id, state)
-
-            yield f"data: {json_mod.dumps({'type': 'done', 'message': result.output, 'tools_called': _extract_tool_calls(result)})}\n\n"
-
-        except Exception as e:
-            logger.warning("agent_iter_error", session_id=session_id, error=str(e))
-            # Fallback: retry with agent.run() (no streaming but more robust)
+        with logfire.span(
+            'agent turn',
+            session_id=session_id,
+            pm_name=state.pm_name,
+            turn='respond',
+            user_input=req.input,
+        ):
             try:
-                yield f"data: {json_mod.dumps({'type': 'thinking'})}\n\n"
-                result = await pmm_agent.run(
+                async with pmm_agent.iter(
                     req.input,
                     message_history=state.message_history,
                     deps=deps,
                     model=deps.llm_model,
                     model_settings=deps.model_settings,
-                )
+                ) as agent_run:
+                    async for node in agent_run:
+                        node_name = type(node).__name__
+
+                        if node_name == 'CallToolsNode' and hasattr(node, 'model_response'):
+                            # Extract tool calls from the model response
+                            for part in node.model_response.parts:
+                                if isinstance(part, ToolCallPart):
+                                    tool = part.tool_name.replace('default_api:', '')
+                                    skill = TOOL_TO_SKILL.get(tool, '')
+                                    args = part.args if isinstance(part.args, dict) else {}
+                                    # Build a readable description
+                                    arg_str = ', '.join(f'{k}={v}' for k, v in args.items() if v)
+                                    yield f"data: {json_mod.dumps({'type': 'tool_call', 'tool': tool, 'skill': skill, 'args': arg_str})}\n\n"
+
+                        elif node_name == 'ModelRequestNode':
+                            yield f"data: {json_mod.dumps({'type': 'thinking'})}\n\n"
+
+                result = agent_run.result
                 state.message_history = list(result.all_messages())
                 state.total_chars = count_message_chars(state.message_history)
                 await session_manager.save(session_id, state)
+
+                logfire.info('agent response', agent_output=result.output[:500])
                 yield f"data: {json_mod.dumps({'type': 'done', 'message': result.output, 'tools_called': _extract_tool_calls(result)})}\n\n"
-            except Exception as e2:
-                logger.error("agent_error", session_id=session_id, error=str(e2))
-                await session_manager.save(session_id, state)
-                yield f"data: {json_mod.dumps({'type': 'error', 'message': str(e2)})}\n\n"
+
+            except Exception as e:
+                logger.warning("agent_iter_error", session_id=session_id, error=str(e))
+                # Fallback: retry with agent.run() (no streaming but more robust)
+                try:
+                    yield f"data: {json_mod.dumps({'type': 'thinking'})}\n\n"
+                    result = await pmm_agent.run(
+                        req.input,
+                        message_history=state.message_history,
+                        deps=deps,
+                        model=deps.llm_model,
+                        model_settings=deps.model_settings,
+                    )
+                    state.message_history = list(result.all_messages())
+                    state.total_chars = count_message_chars(state.message_history)
+                    await session_manager.save(session_id, state)
+                    logfire.info('agent response', agent_output=result.output[:500])
+                    yield f"data: {json_mod.dumps({'type': 'done', 'message': result.output, 'tools_called': _extract_tool_calls(result)})}\n\n"
+                except Exception as e2:
+                    logfire.error('agent error', error=str(e2))
+                    logger.error("agent_error", session_id=session_id, error=str(e2))
+                    await session_manager.save(session_id, state)
+                    yield f"data: {json_mod.dumps({'type': 'error', 'message': str(e2)})}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

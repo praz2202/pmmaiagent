@@ -13,8 +13,11 @@ import os
 from typing import Any
 
 import httpx
+import logfire
 
 from settings import APP_ENV
+
+logfire.instrument_httpx()
 
 
 async def aha_api_call(method: str, path: str, params: dict | None = None) -> Any:
@@ -33,6 +36,8 @@ async def aha_api_call(method: str, path: str, params: dict | None = None) -> An
             },
             timeout=30,
         )
+        if resp.status_code == 404:
+            return {"error": f"Not found: {path}. The ID may not exist in Aha."}
         resp.raise_for_status()
         if not resp.text or not resp.text.strip():
             return {}
@@ -108,6 +113,8 @@ async def egain_api_call(
             },
             timeout=30,
         )
+        if resp.status_code == 404:
+            return {"error": f"Not found: {path}. The resource may not exist."}
         resp.raise_for_status()
         if not resp.text or not resp.text.strip():
             return {}

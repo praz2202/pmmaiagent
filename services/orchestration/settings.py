@@ -63,6 +63,7 @@ MAX_TOOL_RESPONSE_CHARS = 60_000
 
 APP_ENV = os.getenv("APP_ENV", "local")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "debug")
+LOGFIRE_TOKEN = os.getenv("LOGFIRE_TOKEN", "")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 DYNAMODB_ENDPOINT = os.getenv("DYNAMODB_ENDPOINT", "http://localhost:8042")
 CONTEXT_BUCKET = os.getenv("CONTEXT_BUCKET", "egain-pmm-agent-context-066148154898")
