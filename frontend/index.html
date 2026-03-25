@@ -6,6 +6,8 @@
     <title>eGain PMM AI Agent</title>
     <!-- Markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- MSAL.js for Microsoft SSO (production only) -->
+    <script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
     <style>
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         :root {
@@ -97,14 +99,24 @@
         <div class="login-logo"><img src="assets/egain-logo.svg" alt="eGain"></div>
         <h1 class="login-title">PMM AI Agent</h1>
         <p class="login-subtitle">Sign in to manage release notes, portal articles, and documentation.</p>
-        <select id="pmSelect" class="pm-select">
-            <option value="">Select your name</option>
-            <option value="Prasanth Sai">Prasanth Sai</option>
-            <option value="Aiushe Mishra">Aiushe Mishra</option>
-            <option value="Carlos España">Carlos España</option>
-            <option value="Varsha Thalange">Varsha Thalange</option>
-        </select>
-        <button class="btn-login" onclick="login()">Start Session</button>
+        <!-- Local dev: PM dropdown -->
+        <div id="localLogin">
+            <select id="pmSelect" class="pm-select">
+                <option value="">Select your name</option>
+                <option value="Prasanth Sai">Prasanth Sai</option>
+                <option value="Aiushe Mishra">Aiushe Mishra</option>
+                <option value="Carlos España">Carlos España</option>
+                <option value="Varsha Thalange">Varsha Thalange</option>
+            </select>
+            <button class="btn-login" onclick="login()" style="margin-top: 1rem;">Start Session</button>
+        </div>
+        <!-- Production: Microsoft SSO -->
+        <div id="msalLogin" class="hidden">
+            <button class="btn-login" onclick="msalLogin()" style="display: flex; align-items: center; gap: 0.5rem;">
+                <svg width="18" height="18" viewBox="0 0 21 21"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>
+                Sign in with Microsoft
+            </button>
+        </div>
         <p id="loginError" class="hidden" style="color: var(--error); font-size: 0.8125rem;"></p>
     </div>
     <div id="chatScreen" class="hidden" style="display:none; flex-direction:column; height:100vh;">
@@ -156,19 +168,64 @@
             cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
             return cleaned;
         }
-        const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-            ? 'http://localhost:8000'
-            : 'https://api.controlflows.com';
+        const IS_LOCAL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        const API_BASE = IS_LOCAL ? 'http://localhost:8000' : 'https://api.controlflows.com';
         let sessionId = null, currentUser = null;
+
+        // MSAL configuration (production only)
+        const msalConfig = {
+            auth: {
+                clientId: '6f082c2d-7e52-4f24-80e5-ae8f04bf9e68',
+                authority: 'https://login.microsoftonline.com/common',
+                redirectUri: window.location.origin,
+            },
+            cache: { cacheLocation: 'sessionStorage', storeAuthStateInCookie: false },
+        };
+        let msalInstance = null;
+
+        // Show correct login mode on load
+        (function initLoginMode() {
+            if (IS_LOCAL) {
+                document.getElementById('localLogin').classList.remove('hidden');
+                document.getElementById('msalLogin').classList.add('hidden');
+            } else {
+                document.getElementById('localLogin').classList.add('hidden');
+                document.getElementById('msalLogin').classList.remove('hidden');
+                msalInstance = new msal.PublicClientApplication(msalConfig);
+            }
+        })();
+
+        async function msalLogin() {
+            try {
+                document.getElementById('loginError').classList.add('hidden');
+                const loginResp = await msalInstance.loginPopup({ scopes: ['User.Read'] });
+                const email = loginResp.account.username;
+                // Resolve PM name from email via backend
+                const resolveResp = await fetch(`${API_BASE}/pm/resolve?email=${encodeURIComponent(email)}`);
+                if (!resolveResp.ok) {
+                    const err = await resolveResp.json();
+                    throw new Error(err.detail || 'Your email is not registered as a PM.');
+                }
+                const pm = await resolveResp.json();
+                enterChat(pm.name);
+            } catch (err) {
+                document.getElementById('loginError').textContent = err.message || 'Sign-in failed.';
+                document.getElementById('loginError').classList.remove('hidden');
+            }
+        }
 
         async function login() {
             const pmName = document.getElementById('pmSelect').value;
             if (!pmName) { document.getElementById('loginError').textContent = 'Please select your name.'; document.getElementById('loginError').classList.remove('hidden'); return; }
+            enterChat(pmName);
+        }
+
+        function enterChat(pmName) {
             currentUser = pmName;
             document.getElementById('userName').textContent = pmName;
             document.getElementById('loginScreen').classList.add('hidden');
             const cs = document.getElementById('chatScreen'); cs.classList.remove('hidden'); cs.style.display = 'flex';
-            await startSession(pmName);
+            startSession(pmName);
         }
         function logout() {
             if (sessionId) fetch(`${API_BASE}/sessions/${sessionId}/end`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({reason:'logout'}) }).catch(()=>{});
@@ -176,6 +233,10 @@
             document.getElementById('chatScreen').style.display = 'none';
             document.getElementById('loginScreen').classList.remove('hidden');
             document.getElementById('messages').innerHTML = '';
+            if (msalInstance) {
+                const accounts = msalInstance.getAllAccounts();
+                if (accounts.length > 0) msalInstance.logoutPopup({ account: accounts[0] }).catch(()=>{});
+            }
         }
         async function startSession(pmName) {
             showTyping('Starting session'); setStatus('');
