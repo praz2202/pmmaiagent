@@ -521,6 +521,13 @@
         <p class="login-subtitle">
             Sign in with your eGain account to manage release notes, portal articles, and documentation.
         </p>
+        <select id="pmSelect" style="padding: 0.625rem 1rem; border: 1px solid var(--border-secondary); border-radius: var(--radius-lg); font-size: 0.9375rem; font-family: var(--font-sans); color: var(--text-primary); background: var(--bg-primary); min-width: 250px; cursor: pointer;">
+            <option value="">Select your name</option>
+            <option value="Prasanth Sai">Prasanth Sai</option>
+            <option value="Aiushe Mishra">Aiushe Mishra</option>
+            <option value="Carlos España">Carlos España</option>
+            <option value="Varsha Thalange">Varsha Thalange</option>
+        </select>
         <button class="btn-login" onclick="login()">Sign in with eGain</button>
         <p id="loginError" class="hidden" style="color: var(--error); font-size: 0.8125rem;"></p>
     </div>
@@ -653,6 +660,14 @@
 
         // ── Auth ────────────────────────────────────────────────────
         async function login() {
+            // Require PM selection
+            const pmName = document.getElementById('pmSelect').value;
+            if (!pmName) {
+                document.getElementById('loginError').textContent = 'Please select your name first.';
+                document.getElementById('loginError').classList.remove('hidden');
+                return;
+            }
+
             try {
                 document.getElementById('loginError').textContent = 'Signing in...';
                 document.getElementById('loginError').classList.remove('hidden');
@@ -664,7 +679,7 @@
 
                 const response = await msalInstance.loginPopup(loginRequest);
                 msalInstance.setActiveAccount(response.account);
-                await onLoginSuccess(response.accessToken);
+                await onLoginSuccess(response.accessToken, pmName);
             } catch (err) {
                 console.error('Login failed:', err);
                 document.getElementById('loginError').textContent = `Login failed: ${err.message}`;
@@ -672,19 +687,10 @@
             }
         }
 
-        async function onLoginSuccess(token) {
+        async function onLoginSuccess(token, pmName) {
             egainToken = token;
-            console.log('eGain token acquired');
-
-            // Get user name from MSAL account
-            const account = msalInstance.getActiveAccount();
-            console.log('MSAL account:', account);
-            currentUser = account?.name || account?.idTokenClaims?.name || account?.username || 'PM';
-
-            // If name looks like an email, extract the first part
-            if (currentUser.includes('@')) {
-                currentUser = currentUser.split('@')[0];
-            }
+            currentUser = pmName || 'PM';
+            console.log('eGain token acquired for', currentUser);
 
             document.getElementById('userName').textContent = currentUser;
 
