@@ -47,7 +47,7 @@ async def get_child_topics(
         "GET",
         f"/portals/{portal_id}/topics/{short_id}",
         params={"level": "1", "$lang": "en-US"},
-        session_id=ctx.deps.session_id,
+        egain_username=ctx.deps.pm_context.egain_username,
     )
 
 
@@ -70,7 +70,7 @@ async def browse_portal_topic(
         "GET",
         f"/portals/{portal_id}/articles",
         params={"$filter[topicId]": short_id},
-        session_id=ctx.deps.session_id,
+        egain_username=ctx.deps.pm_context.egain_username,
     )
 
 
@@ -81,8 +81,6 @@ async def read_portal_article(
     """Get full article content including HTML body. Only call when you need
     to read the article to decide on update or to know exactly what to change.
 
-    NOTE: May require user-scoped token for full content access.
-
     Args:
         article_id: Article short ID (e.g. 'EASY-17368').
     """
@@ -90,7 +88,8 @@ async def read_portal_article(
     return await egain_api_call(
         "GET",
         f"/portals/{portal_id}/articles/{article_id}",
-        session_id=ctx.deps.session_id,
+        params={"articleAdditionalAttributes": "content"},
+        egain_username=ctx.deps.pm_context.egain_username,
     )
 
 

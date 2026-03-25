@@ -1,5 +1,5 @@
 ---
-name: release-features
+name: release_features
 description: >
   Fetching and reviewing release features from Aha. Use when a PM asks about
   features in a release, wants to see what's in a release, or needs feature
@@ -38,5 +38,7 @@ If a feature has empty Documents Impacted → ask PM to update it in Aha.
 - Don't fetch full feature content (Level 2) until PM confirms the feature list
 - AIA does NOT use the Release field — use tags instead
 - For standard products, parse version from release string: ignore the prefix before the space
+- PMs may say "21.23.1" or "21.23.1.0" — both refer to the same release. Match flexibly:
+  "21.23.1" should match "ECAI-R-53 21.23.1.0". Always try appending ".0" if no exact match.
 - Rate limit is 100 req/min shared across all sessions — 429 errors propagate to PM
-- Jira URL: try `custom_fields["jira_url"]` first, fall back to `integration_fields["url"]`
+- Jira link is in `integration_fields` (look for service_name="jira", name="key"). Full URL: `https://beetle.egain.com/browse/{key}`. NEVER fabricate or guess Jira links.

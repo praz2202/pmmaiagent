@@ -22,7 +22,7 @@ async def list_releases(ctx: RunContext[AgentDeps], product_key: str) -> Any:
     Args:
         product_key: Aha product key: 'ECAI', 'ECKN', or 'ECAD'.
     """
-    return await aha_api_call("GET", f"/products/{product_key}/releases")
+    return await aha_api_call("GET", f"/products/{product_key}/releases", {"per_page": "200"})
 
 
 async def fetch_release_features(
@@ -44,10 +44,10 @@ async def fetch_release_features(
     """
     if tag:
         path = f"/products/{product_key}/features"
-        params = {"tag": tag, "fields": "name,custom_fields,tags"}
+        params = {"tag": tag, "fields": "name,custom_fields,tags,integration_fields"}
     else:
         path = f"/releases/{release_id}/features"
-        params = {"fields": "name,custom_fields,tags"}
+        params = {"fields": "name,custom_fields,tags,integration_fields"}
     return await aha_api_call("GET", path, params)
 
 
@@ -61,7 +61,7 @@ async def get_feature_detail(ctx: RunContext[AgentDeps], feature_id: str) -> Any
         feature_id: Feature ID, e.g. 'AIA-42' or 'ECAI-123'.
     """
     return await aha_api_call("GET", f"/features/{feature_id}", {
-        "fields": "name,description,custom_fields,tags,attachments",
+        "fields": "name,description,custom_fields,tags,attachments,integration_fields",
     })
 
 

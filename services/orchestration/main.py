@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 import structlog
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 
 from session.redis_client import SessionManager
@@ -95,10 +96,9 @@ async def health():
 
 
 @app.post("/sessions/start")
-async def start_session(req: StartRequest, x_egain_token: str | None = Header(None)):
+async def start_session(req: StartRequest):
     from agent import pmm_agent
     from compaction import count_message_chars
-    from tools.deps import set_egain_token
 
     pm_context = load_company_context(req.pm_name)
     session_id = str(uuid.uuid4())
@@ -110,8 +110,6 @@ async def start_session(req: StartRequest, x_egain_token: str | None = Header(No
     )
 
     # Store PM's eGain token (if provided from frontend login)
-    if x_egain_token:
-        set_egain_token(session_id, x_egain_token)
 
     deps = build_deps(pm_context, session_id)
 
@@ -139,46 +137,92 @@ async def start_session(req: StartRequest, x_egain_token: str | None = Header(No
 
 
 @app.post("/sessions/{session_id}/respond")
-async def respond(session_id: str, req: RespondRequest, x_egain_token: str | None = Header(None)):
+async def respond(session_id: str, req: RespondRequest):
     from agent import pmm_agent
     from compaction import maybe_compact, count_message_chars
-    from tools.deps import set_egain_token
+    from pydantic_ai.agent import AgentRun
 
     state = await session_manager.get(session_id)
     if not state:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # Refresh PM's eGain token (frontend sends it with each request)
-    if x_egain_token:
-        set_egain_token(session_id, x_egain_token)
-
     deps = build_deps(state.pm_context, session_id)
-
-    # Compaction check before next turn
     await maybe_compact(state, deps.llm_model)
 
-    # Agent turn — continues the conversation
-    try:
-        result = await pmm_agent.run(
-            req.input,
-            message_history=state.message_history,
-            deps=deps,
-            model=deps.llm_model,
-            model_settings=deps.model_settings,
-        )
-        state.message_history = list(result.all_messages())
-        state.total_chars = count_message_chars(state.message_history)
-    except Exception as e:
-        logger.error("agent_error", session_id=session_id, error=str(e))
-        await session_manager.save(session_id, state)
-        return {"message": f"Error: {str(e)}. You can retry.", "awaiting_input": True}
+    import json as json_mod
 
-    await session_manager.save(session_id, state)
-    return {
-        "message": result.output,
-        "awaiting_input": True,
-        "tools_called": _extract_tool_calls(result),
+    # Map tool names to skill names for display
+    TOOL_TO_SKILL = {
+        'list_releases': 'Release Features',
+        'fetch_release_features': 'Release Features',
+        'get_feature_detail': 'Release Features',
+        'search_features': 'Feature Search',
+        'get_child_topics': 'Portal Articles',
+        'browse_portal_topic': 'Portal Articles',
+        'read_portal_article': 'Portal Articles',
+        'get_release_tracking': 'Context',
+        'get_portal_structure': 'Context',
+        'get_document_rules': 'Context',
     }
+
+    async def event_stream():
+        """SSE stream: sends tool call events during agent execution, then final result."""
+        from pydantic_ai.messages import ToolCallPart
+
+        try:
+            async with pmm_agent.iter(
+                req.input,
+                message_history=state.message_history,
+                deps=deps,
+                model=deps.llm_model,
+                model_settings=deps.model_settings,
+            ) as agent_run:
+                async for node in agent_run:
+                    node_name = type(node).__name__
+
+                    if node_name == 'CallToolsNode' and hasattr(node, 'model_response'):
+                        # Extract tool calls from the model response
+                        for part in node.model_response.parts:
+                            if isinstance(part, ToolCallPart):
+                                tool = part.tool_name.replace('default_api:', '')
+                                skill = TOOL_TO_SKILL.get(tool, '')
+                                args = part.args if isinstance(part.args, dict) else {}
+                                # Build a readable description
+                                arg_str = ', '.join(f'{k}={v}' for k, v in args.items() if v)
+                                yield f"data: {json_mod.dumps({'type': 'tool_call', 'tool': tool, 'skill': skill, 'args': arg_str})}\n\n"
+
+                    elif node_name == 'ModelRequestNode':
+                        yield f"data: {json_mod.dumps({'type': 'thinking'})}\n\n"
+
+            result = agent_run.result
+            state.message_history = list(result.all_messages())
+            state.total_chars = count_message_chars(state.message_history)
+            await session_manager.save(session_id, state)
+
+            yield f"data: {json_mod.dumps({'type': 'done', 'message': result.output, 'tools_called': _extract_tool_calls(result)})}\n\n"
+
+        except Exception as e:
+            logger.warning("agent_iter_error", session_id=session_id, error=str(e))
+            # Fallback: retry with agent.run() (no streaming but more robust)
+            try:
+                yield f"data: {json_mod.dumps({'type': 'thinking'})}\n\n"
+                result = await pmm_agent.run(
+                    req.input,
+                    message_history=state.message_history,
+                    deps=deps,
+                    model=deps.llm_model,
+                    model_settings=deps.model_settings,
+                )
+                state.message_history = list(result.all_messages())
+                state.total_chars = count_message_chars(state.message_history)
+                await session_manager.save(session_id, state)
+                yield f"data: {json_mod.dumps({'type': 'done', 'message': result.output, 'tools_called': _extract_tool_calls(result)})}\n\n"
+            except Exception as e2:
+                logger.error("agent_error", session_id=session_id, error=str(e2))
+                await session_manager.save(session_id, state)
+                yield f"data: {json_mod.dumps({'type': 'error', 'message': str(e2)})}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 def _extract_tool_calls(result) -> list[dict]:
@@ -217,10 +261,8 @@ async def end_session(session_id: str, req: EndRequest):
         raise HTTPException(status_code=404, detail="Session not found")
 
     from session.session_history import save_session_record
-    from tools.deps import clear_egain_token
     await save_session_record(state, status=req.reason)
     await session_manager.delete(session_id)
-    clear_egain_token(session_id)
     return {"ended": True, "session_id": session_id, "status": req.reason}
 
 

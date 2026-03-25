@@ -25,15 +25,30 @@ AI Agent for Contact Center (25 articles, 67 total with sub-topics)
   └── Upcoming Features for AI Agent 1.2.0 (6 articles)
 ```
 
-## Available data
+## Two types of portal updates
 
-Currently you can:
-- **Get topic tree** — `get_child_topics` returns topic names, article counts, sub-topic IDs
-- **List articles in a topic** — `browse_portal_topic` returns article titles, IDs, created/modified info
+### Release notes articles
+- Go under "New Features for..." or "Upcoming Features for..." sub-topics
+- Decision based on **article titles only** from `browse_portal_topic` — no need to read content
+- Action: create new release notes articles, or check if they already exist
 
-You CANNOT read full article content yet (requires user-scoped auth, coming soon).
-Make update/create decisions based on **article titles and topic structure** for now.
-When full article reading is available, you can refine suggestions with actual content comparison.
+### User Guide / Online Help articles
+- Go under the main product topics (AI Agent for CC, Connectors, Channels, Search 2.0, etc.)
+- Decision flow:
+  1. For each feature, decide which **specific topic** it belongs to (don't browse all topics)
+  2. Fetch article titles from ONLY that topic using `browse_portal_topic`
+  3. If a title matches the feature → fetch full content with `read_portal_article`
+  4. Compare feature details vs existing article content → suggest exact update
+  5. If no title matches → suggest creating a new article in that topic
+  6. If no existing topic fits the feature → suggest creating a new topic + article
+
+## API data per level
+
+**Level 1 — `browse_portal_topic`:** Returns article **titles** and IDs only. No summary
+field available in the list API. Article summary will be null — proceed with title only.
+
+**Level 2 — `read_portal_article`:** Returns full article HTML content. Only call for
+articles where the title suggests it needs updating.
 
 ## Missing article summaries
 

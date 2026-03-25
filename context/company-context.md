@@ -9,11 +9,11 @@ This file contains business data used by the PMM AI Agent. Updated in S3 without
 
 | PM Name | Email | eGain Username | Owned Products | Role | Reports To |
 |---|---|---|---|---|---|
-| Varsha Thalange | varsha.thalange@egain.com | vthalange | AIA, ECAI, ECKN, ECAD | PM Manager | Ashu Roy (CEO) |
-| Prasanth Sai | prasanth.sai@egain.com | psai | AIA, ECAI | PM — AI Agent + AI Services | Varsha Thalange |
-| Aiushe Mishra | aiushe.mishra@egain.com | aiushem | AIA | PM — AI Agent | Prasanth Sai |
-| Carlos España | carlos.espana@egain.com | cespana | ECAI | PM — AI Services | Prasanth Sai |
-| Ankur Mehta | ankur.mehta@egain.com | amehta | ECKN | PM — Knowledge | Varsha Thalange |
+| Varsha Thalange | varsha.thalange@egain.com | vthalange@egain.com | AIA, ECAI, ECKN, ECAD | PM Manager | Ashu Roy (CEO) |
+| Prasanth Sai | prasanth.sai@egain.com | psai@egain.com | AIA, ECAI | PM — AI Agent + AI Services | Varsha Thalange |
+| Aiushe Mishra | aiushe.mishra@egain.com | aiushem@egain.com | AIA | PM — AI Agent | Prasanth Sai |
+| Carlos España | carlos.espana@egain.com | cespana@egain.com | ECAI | PM — AI Services | Prasanth Sai |
+| Ankur Mehta | ankur.mehta@egain.com | amehta@egain.com | ECKN | PM — Knowledge | Varsha Thalange |
 | Peter Huang | peter.huang@egain.com | — | ECKN | PM — Knowledge | Ankur Mehta |
 | Kevin Dohina | kevin.dohina@egain.com | — | ECAD | PM — Advisor Desktop | Varsha Thalange |
 

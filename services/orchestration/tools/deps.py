@@ -118,26 +118,6 @@ def _resolve_llm_api_key(provider: dict) -> str:
 
 # ── Per-session factory ──────────────────────────────────────────────────────
 
-# ── eGain token store (process-level, keyed by session_id) ───────────────────
-# Tokens are stored here — NOT in AgentDeps — so the LLM never sees them.
-# Tool functions access tokens via get_egain_token(session_id).
-_egain_tokens: dict[str, str] = {}
-
-
-def set_egain_token(session_id: str, token: str) -> None:
-    """Store a PM's eGain OAuth token for this session. Called by FastAPI."""
-    _egain_tokens[session_id] = token
-
-
-def get_egain_token(session_id: str) -> str | None:
-    """Get the PM's eGain token. Called by portal tool functions."""
-    return _egain_tokens.get(session_id)
-
-
-def clear_egain_token(session_id: str) -> None:
-    """Remove token when session ends."""
-    _egain_tokens.pop(session_id, None)
-
 
 def build_deps(
     pm_context: PMContext,

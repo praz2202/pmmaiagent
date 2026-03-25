@@ -1,5 +1,5 @@
 ---
-name: release-notes
+name: release_notes
 description: >
   Creating release notes for features. Use when a PM asks to create release
   notes, write release notes, or document a release. This skill has no tools —
@@ -36,15 +36,21 @@ Each release notes article covers ONE feature and follows this format:
 
 ## Where release notes go in the portal
 
-Release notes articles go under release-specific sub-topics:
-- **Unreleased:** "Upcoming Features for {product} {version}" (e.g. "Upcoming Features for AI Agent 1.2.0")
-- **Released:** "New Features for {product} {version}" (e.g. "New Features for AI Agent 1.1.0")
+ALL AI Agent release notes (AIACC, AI Agent for Enterprise, AI Agent for Customers)
+go under **"AI Agent for Contact Center"** as release sub-topics:
+- **Unreleased:** "Upcoming Features for AI Agent {version}"
+- **Released:** "New Features for AI Agent {version}"
+
+For ECAI: release notes go under SEPARATE topics based on the feature type:
+- **Search features** → under **"Search 2.0"** topic → sub-topic "New Features for Search {version}"
+- **Instant Answers features** → under **"Instant Answers"** topic → sub-topic "New Features for Instant Answers {version}"
+- NEVER combine Search and IA into one topic. They are always separate.
 
 When creating release notes:
-- Check if the release topic already exists using `get_child_topics`
-- If "Upcoming Features for..." exists → add articles there
-- If "New Features for..." exists → add articles there
-- If neither exists → suggest creating a new topic under the main product topic
+- Use `get_child_topics` on "AI Agent for Contact Center" to check if the release topic exists
+- If "Upcoming Features for AI Agent {version}" exists → add articles there
+- If "New Features for AI Agent {version}" exists → add articles there
+- If neither exists → suggest creating "Upcoming Features for AI Agent {version}" under "AI Agent for Contact Center"
 - If release is shipped and topic still says "Upcoming" → recommend renaming to "New Features..."
 
 ## Content guidelines
@@ -56,9 +62,24 @@ When creating release notes:
   If yes, name the specific article that needs updating.
 - Content in **Markdown** for PM review. PM converts when applying to portal.
 
+## Jira link
+
+The Jira link is in the feature's `integration_fields` array, NOT custom_fields.
+Look for the entry with `service_name: "jira"` and `name: "key"` — the value is the Jira key
+(e.g. `EGS-90644`). The full Jira URL is: `https://beetle.egain.com/browse/{key}`
+
+Example:
+```json
+{"name": "key", "value": "EGS-90644", "service_name": "jira"}
+```
+→ Jira Link: `https://beetle.egain.com/browse/EGS-90644`
+
+NEVER fabricate or guess the Jira link. If `integration_fields` has no Jira entry,
+note "Jira link not available" and move on.
+
 ## Gotchas
 
 - Generate release notes ONE feature at a time — don't batch
 - If PM says "change the overview" → update and show again, don't skip ahead
-- The Jira Link comes from the feature's custom fields (see release-features skill)
-- If Jira URL is missing, note it but don't block — PM can add it later
+- NEVER fabricate Jira links — always use the `integration_fields` data from Aha
+- If Jira link is missing, note it but don't block — PM can add it later

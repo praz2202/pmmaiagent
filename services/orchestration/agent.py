@@ -49,11 +49,12 @@ async def system_instructions(ctx) -> str:
     portal_articles_skill = load_skill_md("portal_articles")
     feature_search_skill = load_skill_md("feature_search")
 
-    return template.format(
-        pm_name=pm.name,
-        pm_products=", ".join(pm.owned_products),
-        pm_reports_to=pm.reports_to or "—",
-    ) + (
+    # Use replace instead of .format() — .format() breaks on literal {version} etc in the template
+    prompt = template.replace("{pm_name}", pm.name)
+    prompt = prompt.replace("{pm_products}", ", ".join(pm.owned_products))
+    prompt = prompt.replace("{pm_reports_to}", pm.reports_to or "—")
+
+    return prompt + (
         "\n\n--- Skill: Release Features ---\n" + release_features_skill
         + "\n\n--- Skill: Release Notes ---\n" + release_notes_skill
         + "\n\n--- Skill: Portal Articles ---\n" + portal_articles_skill
