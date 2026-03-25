@@ -1,0 +1,36 @@
+services:
+  orchestration:
+    build:
+      context: ../../services/orchestration
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - ../../.env.prod
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - APP_ENV=prod
+    volumes:
+      - ../../config:/app/config:ro
+      - ../../context:/app/context:ro
+      - ../../prompts:/app/prompts:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:
