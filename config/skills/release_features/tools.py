@@ -12,6 +12,19 @@ from tools.deps import AgentDeps
 from tools.api_client import aha_api_call
 
 
+def _check_product_access(ctx: RunContext[AgentDeps], product_key: str) -> str | None:
+    """Check if PM owns this product. Returns error message or None if allowed."""
+    owned = ctx.deps.pm_context.owned_products
+    if product_key.upper() not in [p.upper() for p in owned]:
+        pm_name = ctx.deps.pm_context.name
+        return (
+            f"I can only access products you own ({', '.join(owned)}). "
+            f"{product_key} is managed by a different PM. "
+            f"Please reach out to the PM who owns {product_key} for that information."
+        )
+    return None
+
+
 # ── Level 1: Feature list ────────────────────────────────────────────────────
 
 async def list_releases(ctx: RunContext[AgentDeps], product_key: str) -> Any:
@@ -22,6 +35,8 @@ async def list_releases(ctx: RunContext[AgentDeps], product_key: str) -> Any:
     Args:
         product_key: Aha product key: 'ECAI', 'ECKN', or 'ECAD'.
     """
+    if err := _check_product_access(ctx, product_key):
+        return {"error": err}
     return await aha_api_call("GET", f"/products/{product_key}/releases", {"per_page": "200"})
 
 
@@ -42,6 +57,8 @@ async def fetch_release_features(
         release_id: Release ID from list_releases. Required for ECAI/ECKN/ECAD.
         tag: AIA version tag, e.g. 'AIA 1.2.0'. Required for AIA.
     """
+    if err := _check_product_access(ctx, product_key):
+        return {"error": err}
     if tag:
         path = f"/products/{product_key}/features"
         tag_clean = tag.strip()
@@ -68,6 +85,10 @@ async def get_feature_detail(ctx: RunContext[AgentDeps], feature_id: str) -> Any
     Args:
         feature_id: Feature ID, e.g. 'AIA-42' or 'ECAI-123'.
     """
+    # Extract product key from feature ID (e.g. "ECAI-123" → "ECAI")
+    product_key = feature_id.split("-")[0] if "-" in feature_id else ""
+    if product_key and (err := _check_product_access(ctx, product_key)):
+        return {"error": err}
     return await aha_api_call("GET", f"/features/{feature_id}", {
         "fields": "name,description,custom_fields,tags,attachments,integration_fields,requirements",
     })
