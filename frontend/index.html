@@ -184,7 +184,7 @@
         let msalInstance = null;
 
         // Show correct login mode on load
-        (function initLoginMode() {
+        (async function initLoginMode() {
             if (IS_LOCAL) {
                 document.getElementById('localLogin').classList.remove('hidden');
                 document.getElementById('msalLogin').classList.add('hidden');
@@ -192,6 +192,7 @@
                 document.getElementById('localLogin').classList.add('hidden');
                 document.getElementById('msalLogin').classList.remove('hidden');
                 msalInstance = new msal.PublicClientApplication(msalConfig);
+                await msalInstance.initialize();
             }
         })();
 
