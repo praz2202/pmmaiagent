@@ -103,7 +103,16 @@
     </style>
 </head>
 <body>
-    <div id="loginScreen" class="login-screen">
+    <!-- Loading screen — shown while checking auth -->
+    <div id="loadingScreen" class="login-screen">
+        <div class="login-logo"><img src="assets/egain-logo.svg" alt="eGain"></div>
+        <h1 class="login-title">PMM AI Agent</h1>
+        <div style="display: flex; align-items: center; gap: 0.5rem; color: var(--text-tertiary); font-size: 0.875rem;">
+            <span class="thinking-dots"><span></span><span></span><span></span></span>
+            Signing in...
+        </div>
+    </div>
+    <div id="loginScreen" class="login-screen hidden">
         <div class="login-logo"><img src="assets/egain-logo.svg" alt="eGain"></div>
         <h1 class="login-title">PMM AI Agent</h1>
         <p class="login-subtitle">Sign in to manage release notes, portal articles, and documentation.</p>
@@ -202,7 +211,12 @@
 
         // Show correct login mode on load + auto-login if MSAL session exists
         (async function initLoginMode() {
+            const loadingScreen = document.getElementById('loadingScreen');
+            const loginScreen = document.getElementById('loginScreen');
+
             if (IS_LOCAL) {
+                loadingScreen.classList.add('hidden');
+                loginScreen.classList.remove('hidden');
                 document.getElementById('localLogin').classList.remove('hidden');
                 document.getElementById('msalLogin').classList.add('hidden');
             } else {
@@ -217,16 +231,17 @@
                             const resolveResp = await fetch(`${API_BASE}/pm/resolve?email=${encodeURIComponent(email)}`);
                             if (resolveResp.ok) {
                                 const pm = await resolveResp.json();
+                                loadingScreen.classList.add('hidden');
                                 enterChat(pm.name);
-                                return; // skip showing login screen
+                                return;
                             }
                         } catch (e) { /* fall through to login screen */ }
                     }
-                    document.getElementById('msalLogin').classList.remove('hidden');
-                } else {
-                    document.getElementById('msalLogin').classList.remove('hidden');
-                    console.error('MSAL library not loaded');
                 }
+                // No valid session — show login screen
+                loadingScreen.classList.add('hidden');
+                loginScreen.classList.remove('hidden');
+                document.getElementById('msalLogin').classList.remove('hidden');
             }
         })();
 
