@@ -224,6 +224,18 @@ async def end_session(session_id: str, req: EndRequest):
     return {"ended": True, "session_id": session_id, "status": req.reason}
 
 
+@app.get("/pm/resolve")
+async def resolve_pm(email: str):
+    """Resolve PM email to name using company-context.md."""
+    from context_loader.s3_loader import _get_raw_md, _parse_pm_ownership_table
+    raw = _get_raw_md()
+    pm_rows = _parse_pm_ownership_table(raw)
+    for row in pm_rows:
+        if row["email"].strip().lower() == email.lower():
+            return {"name": row["name"].strip(), "email": row["email"].strip()}
+    raise HTTPException(status_code=404, detail=f"PM with email '{email}' not found")
+
+
 @app.post("/internal/context/invalidate")
 async def invalidate_context():
     """Called by Lambda when company-context.md is updated in S3."""
