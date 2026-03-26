@@ -21,8 +21,8 @@
             --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
             --radius: 0.5rem; --radius-lg: 0.75rem; --radius-xl: 1rem;
         }
-        html { height: 100%; overflow: hidden; }
-        body { font-family: var(--font-sans); background: var(--bg-secondary); color: var(--text-primary); height: var(--vh, 100vh); display: flex; flex-direction: column; overflow: hidden; padding-bottom: env(safe-area-inset-bottom, 0); }
+        html, body { height: 100%; overflow: hidden; position: fixed; width: 100%; }
+        body { font-family: var(--font-sans); background: var(--bg-secondary); color: var(--text-primary); display: flex; flex-direction: column; padding-bottom: env(safe-area-inset-bottom, 0); }
         .header { background: var(--bg-primary); border-bottom: 1px solid var(--border-primary); padding: 0.75rem 1.5rem; display: flex; align-items: center; justify-content: space-between; box-shadow: var(--shadow-sm); flex-shrink: 0; }
         .header-left { display: flex; align-items: center; gap: 0.75rem; }
         .header-logo { height: 20px; width: auto; } .header-logo img { height: 100%; width: auto; }
@@ -216,7 +216,7 @@
             <div class="sidebar-empty">No previous conversations</div>
         </div>
     </div>
-    <div id="chatScreen" class="hidden" style="display:none; flex-direction:column; height:var(--vh, 100vh);">
+    <div id="chatScreen" class="hidden" style="display:none; flex-direction:column; height:var(--vh, 100vh); position:fixed; top:0; left:0; right:0;">
         <div class="header">
             <div class="header-left">
                 <button class="btn-sidebar-toggle" onclick="toggleSidebar()" title="Conversation history">
@@ -523,14 +523,19 @@
         function handleKeyDown(e) { if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }
         function autoResize(el) { el.style.height='auto'; el.style.height=Math.min(el.scrollHeight,120)+'px'; }
 
-        // Fix mobile browser viewport height (Chrome address bar)
+        // Fix mobile browser viewport height (Chrome/Safari address bar + keyboard)
         function setMobileVh() {
-            document.documentElement.style.setProperty('--vh', window.innerHeight + 'px');
+            const vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+            document.documentElement.style.setProperty('--vh', vh + 'px');
+            // Scroll messages to bottom when keyboard opens/closes
+            const msgs = document.getElementById('messages');
+            if (msgs) setTimeout(() => { msgs.scrollTop = msgs.scrollHeight; }, 100);
         }
         setMobileVh();
         window.addEventListener('resize', setMobileVh);
         if (window.visualViewport) {
             window.visualViewport.addEventListener('resize', setMobileVh);
+            window.visualViewport.addEventListener('scroll', setMobileVh);
         }
         function toggleSendBtn(ta) { const b=document.getElementById('sendBtn'); ta.value.trim() ? b.classList.add('active') : b.classList.remove('active'); }
         function escapeHtml(t) { const d=document.createElement('div'); d.textContent=t; return d.innerHTML; }
