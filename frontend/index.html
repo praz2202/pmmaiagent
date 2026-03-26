@@ -272,6 +272,27 @@
         const API_BASE = IS_LOCAL ? 'http://localhost:8000' : 'https://api.controlflows.com';
         let sessionId = null, currentUser = null;
 
+        // Session persistence across page refreshes
+        function _saveSession() {
+            if (sessionId) {
+                sessionStorage.setItem('pmm_session', JSON.stringify({
+                    sessionId, currentUser, currentPmEmail,
+                    messages: currentSessionMessages,
+                }));
+            } else {
+                sessionStorage.removeItem('pmm_session');
+            }
+        }
+        function _loadSavedSession() {
+            try {
+                const raw = sessionStorage.getItem('pmm_session');
+                return raw ? JSON.parse(raw) : null;
+            } catch { return null; }
+        }
+        function _clearSavedSession() {
+            sessionStorage.removeItem('pmm_session');
+        }
+
         // MSAL configuration (production only)
         const msalConfig = {
             auth: {
@@ -371,12 +392,26 @@
             document.getElementById('loginScreen').classList.add('hidden');
             document.getElementById('loadingScreen').classList.add('hidden');
             const cs = document.getElementById('chatScreen'); cs.classList.remove('hidden'); cs.style.display = 'flex';
-            startSession(pmName);
+
+            // Check for saved session (page refresh)
+            const saved = _loadSavedSession();
+            if (saved && saved.sessionId && saved.currentUser === pmName) {
+                sessionId = saved.sessionId;
+                currentSessionMessages = saved.messages || [];
+                currentPmEmail = saved.currentPmEmail || email || null;
+                // Restore messages to UI
+                currentSessionMessages.forEach(m => addMessage(m.role, m.content, null, true));
+                const msgs = document.getElementById('messages');
+                msgs.scrollTop = msgs.scrollHeight;
+            } else {
+                startSession(pmName);
+            }
             loadHistory();
         }
         function logout() {
             if (sessionId) fetch(`${API_BASE}/sessions/${sessionId}/end`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({reason:'logout'}) }).catch(()=>{});
-            sessionId = null; currentUser = null;
+            sessionId = null; currentUser = null; currentSessionMessages = [];
+            _clearSavedSession();
             document.getElementById('chatScreen').style.display = 'none';
             document.getElementById('loginScreen').classList.remove('hidden');
             document.getElementById('messages').innerHTML = '';
@@ -458,6 +493,7 @@
         function addMessage(role, text, toolsCalled, skipTracking) {
             if (!skipTracking && !viewingHistory) {
                 currentSessionMessages.push({ role, content: text });
+                _saveSession();
             }
             const messages = document.getElementById('messages');
             const initials = role === 'assistant' ? 'AI' : (currentUser||'PM').split(' ').map(n=>n[0]).join('').toUpperCase();
