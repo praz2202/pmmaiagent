@@ -587,12 +587,15 @@
             if (sessionId) {
                 const firstUserMsg = currentSessionMessages.find(m => m.role === 'user');
                 const activeTitle = firstUserMsg ? firstUserMsg.content.slice(0, 80) : 'Current conversation';
+                const now = new Date();
+                const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                 html += `
                     <div class="sidebar-item" style="cursor: pointer;" onclick="returnToActive()">
-                        <div style="display: flex; align-items: center; gap: 0.375rem;">
-                            <span style="background: var(--success); color: white; font-size: 0.5625rem; padding: 0.125rem 0.375rem; border-radius: 9999px; font-weight: 600;">ACTIVE</span>
-                            <div class="sidebar-item-title">${escapeHtml(activeTitle)}</div>
+                        <div class="sidebar-item-title">
+                            <span style="background: var(--success); color: white; font-size: 0.5625rem; padding: 0.125rem 0.375rem; border-radius: 9999px; font-weight: 600; vertical-align: middle; margin-right: 0.25rem;">ACTIVE</span>
+                            ${escapeHtml(activeTitle)}
                         </div>
+                        <div class="sidebar-item-time">${timeStr}</div>
                     </div>
                 `;
             }
