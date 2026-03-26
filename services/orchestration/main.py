@@ -312,7 +312,40 @@ async def resolve_pm(email: str):
         egain_user = (row.get("egain_username") or "").strip().lower()
         if egain_user and egain_user == email_lower:
             return {"name": row["name"].strip(), "email": row["email"].strip()}
+        # Also match on name (for local dev dropdown)
+        if row["name"].strip().lower() == email_lower:
+            return {"name": row["name"].strip(), "email": row["email"].strip()}
     raise HTTPException(status_code=404, detail=f"PM with email '{email}' not found")
+
+
+@app.get("/sessions/history")
+async def session_history(email: str):
+    """Get recent session history for a PM (last 15 conversations)."""
+    from session.session_history import get_session_history
+    # Resolve the actual email (MSAL may send egain_username)
+    resolved_email = email
+    try:
+        from context_loader.s3_loader import _get_raw_md, _parse_pm_ownership_table
+        raw = _get_raw_md()
+        for row in _parse_pm_ownership_table(raw):
+            egain_user = (row.get("egain_username") or "").strip().lower()
+            if egain_user and egain_user == email.lower():
+                resolved_email = row["email"].strip()
+                break
+    except Exception:
+        pass
+    sessions = await get_session_history(resolved_email, limit=15)
+    return {"sessions": sessions}
+
+
+@app.get("/sessions/{session_id}/messages")
+async def get_session_messages(session_id: str):
+    """Get messages for a past session (read-only replay)."""
+    from session.session_history import get_session_messages as _get_msgs
+    messages = await _get_msgs(session_id)
+    if messages is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"session_id": session_id, "messages": messages}
 
 
 @app.post("/internal/context/invalidate")

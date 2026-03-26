@@ -84,6 +84,12 @@ class PMAgentState(BaseModel):
 
 # ── Session history (DynamoDB) ───────────────────────────────────────────────
 
+class ChatMessage(BaseModel):
+    """A single user/assistant message for conversation replay."""
+    role: str                           # "user" | "assistant"
+    content: str
+
+
 class SessionRecord(BaseModel):
     """Written to DynamoDB once at session end. Never updated."""
     session_id: str                     # partition key
@@ -92,4 +98,6 @@ class SessionRecord(BaseModel):
     start_time: str
     end_time: str
     status: str                         # "completed" | "restarted"
+    title: str = ""                     # first user message — for history sidebar
+    messages: list[ChatMessage] = []    # conversation for replay
     tool_calls: list[ToolCallRecord] = []
