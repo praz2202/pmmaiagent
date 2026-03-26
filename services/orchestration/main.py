@@ -334,7 +334,9 @@ async def list_tools():
 
 # ── Frontend serving ─────────────────────────────────────────────────────────
 
-_FRONTEND_DIR = Path(__file__).parents[1] / "frontend" if (Path(__file__).parents[1] / "frontend").exists() else Path(__file__).parents[3] / "frontend"
+# In Docker: /app/frontend (volume mount). Locally: repo_root/frontend
+_app_dir = Path(__file__).parent
+_FRONTEND_DIR = _app_dir / "frontend" if (_app_dir / "frontend").exists() else _app_dir.parents[1] / "frontend"
 
 if _FRONTEND_DIR.exists():
     # Serve static assets (CSS, JS, images)
