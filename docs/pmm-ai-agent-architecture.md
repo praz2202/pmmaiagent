@@ -107,12 +107,17 @@ Each session belongs to exactly one PM — no shared state across sessions. When
 
 ### 3.6 Session History (DynamoDB)
 
-Stores completed session records for audit. Written once when a session ends (`POST /sessions/{id}/end`).
+Stores completed session records including conversation messages for replay. Written once when a session ends (`POST /sessions/{id}/end`).
 
 **Table:** `pmm-agent-sessions`
 **Partition key:** `session_id` (String)
+**GSI:** `pm_email-start_time-index` (pm_email HASH, start_time RANGE) — queries recent sessions per PM
 
-**What is NOT stored:** Full tool responses, raw LLM prompts, API credentials, Bearer tokens. Only tool call names, parameters, and the fact that a response was received.
+**What is stored:** session_id, pm_name, pm_email, start/end time, status, title (first user message), conversation messages (user + assistant pairs), tool call metadata.
+
+**What is NOT stored:** Full tool responses, raw LLM prompts, API credentials, Bearer tokens.
+
+**Conversation history sidebar:** The frontend shows the last 15 conversations in a slide-out sidebar. PMs can click on past conversations to view them read-only (input bar disabled and greyed out). The active conversation is shown at the top with a green ACTIVE badge — clicking it returns to the in-progress chat.
 
 ### 3.7 Context Window Management (`compaction.py`)
 
@@ -133,7 +138,9 @@ Release sessions with many articles can accumulate large message histories. Comp
 | `/sessions/start` | POST | Creates session, runs first agent turn |
 | `/sessions/{id}/respond` | POST | SSE streaming via `agent.iter()`, tool call heartbeats |
 | `/sessions/{id}/end` | POST | Writes session to DynamoDB, cleans Redis |
-| `/pm/resolve` | GET | Resolves PM email (including `egain_username` match for MSAL) |
+| `/sessions/history` | GET | Last 15 sessions for a PM (by email) |
+| `/sessions/{id}/messages` | GET | Conversation messages for a past session (replay) |
+| `/pm/resolve` | GET | Resolves PM email/name/egain_username to PM profile |
 | `/health` | GET | Health check |
 
 ---
@@ -218,9 +225,14 @@ Hosted on GitHub Pages at **dev.controlflows.com**.
 - **Local dev:** PM dropdown for quick selection.
 
 **Features:**
-- SSE streaming with tool call heartbeats
+- SSE streaming with tool call heartbeats (shows which skill/tool is being called)
+- Conversation history sidebar (hamburger menu, last 15 sessions)
+- Active session badge — click to return to in-progress conversation
+- Past conversations viewable read-only (grey input bar)
+- Auto-login on page reload if MSAL session exists (no login flash)
+- Loading spinner while checking auth
 - Access denied UI for unauthorized users
-- Restart button: ends current session (writes to DynamoDB), starts fresh
+- New conversation button: ends current session (writes to DynamoDB), starts fresh
 
 ---
 

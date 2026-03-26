@@ -174,7 +174,9 @@ These are direct HTTP calls. No Lambda layer, no SDK wrapper.
 ### 4.4 — Session Management
 
 - **Active sessions:** Redis, using PydanticAI's `ModelMessagesTypeAdapter` for serialization (`session/redis_client.py`)
-- **Completed sessions:** Written to DynamoDB at session end (`session/session_history.py`)
+- **Completed sessions:** Written to DynamoDB at session end (`session/session_history.py`), including conversation messages for replay
+- **Conversation history:** Frontend sidebar shows last 15 sessions per PM, queried via DynamoDB GSI on `pm_email + start_time`
+- **Session replay:** Past conversations viewable read-only; active session shown with green ACTIVE badge
 
 ### 4.5 — Context Compaction (`compaction.py`)
 

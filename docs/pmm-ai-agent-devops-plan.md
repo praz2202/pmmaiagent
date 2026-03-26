@@ -127,6 +127,9 @@ sudo docker compose -f docker-compose.prod.yml up -d --build
 
 # 4. If only config/context changes (no code changes):
 sudo docker compose restart orchestration
+
+# 5. If .env.prod was changed (restart doesn't re-read env_file):
+sudo docker compose -f docker-compose.prod.yml up -d --force-recreate orchestration
 ```
 
 ---
@@ -146,8 +149,8 @@ sudo docker compose restart orchestration
 | Aspect | Local | Production |
 |---|---|---|
 | Redis | Docker (localhost:6379) | Docker on EC2 (via docker-compose.prod.yml) |
-| DynamoDB | DynamoDB Local (Docker) | DynamoDB Local (Docker) or AWS |
-| Secrets | `.env.local` | `.env.prod` on EC2 |
+| DynamoDB | DynamoDB Local (Docker, port 8042) | AWS DynamoDB (`pmm-agent-sessions` table with GSI) |
+| Secrets | `.env.local` | `.env.prod` on EC2 (includes `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`) |
 | Backend URL | localhost:8000 | api.controlflows.com (Nginx reverse proxy) |
 | Frontend | localhost:3000 | dev.controlflows.com (GitHub Pages) |
 | HTTPS | No | Yes (Let's Encrypt) |
