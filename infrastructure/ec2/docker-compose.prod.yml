@@ -14,7 +14,6 @@ services:
       - ../../config:/app/config:ro
       - ../../context:/app/context:ro
       - ../../prompts:/app/prompts:ro
-      - ../../frontend:/app/frontend:ro
     depends_on:
       redis:
         condition: service_healthy
