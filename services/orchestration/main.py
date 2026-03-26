@@ -13,9 +13,12 @@ from datetime import datetime, timezone
 
 import logfire
 import structlog
+from pathlib import Path
+
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 
 from session.redis_client import SessionManager
@@ -327,3 +330,22 @@ async def list_tools():
     """List all registered tools — for debugging."""
     from agent import ALL_TOOLS
     return {"tools": [t.__name__ for t in ALL_TOOLS], "count": len(ALL_TOOLS)}
+
+
+# ── Frontend serving ─────────────────────────────────────────────────────────
+
+_FRONTEND_DIR = Path(__file__).parents[1] / "frontend" if (Path(__file__).parents[1] / "frontend").exists() else Path(__file__).parents[3] / "frontend"
+
+if _FRONTEND_DIR.exists():
+    # Serve static assets (CSS, JS, images)
+    _ASSETS_DIR = _FRONTEND_DIR / "assets"
+    if _ASSETS_DIR.exists():
+        app.mount("/assets", StaticFiles(directory=str(_ASSETS_DIR)), name="assets")
+
+    @app.get("/")
+    async def serve_frontend():
+        return FileResponse(str(_FRONTEND_DIR / "index.html"))
+else:
+    @app.get("/")
+    async def root():
+        return {"message": "PMM AI Agent API", "docs": "/docs"}

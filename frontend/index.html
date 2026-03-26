@@ -191,7 +191,7 @@
             return cleaned;
         }
         const IS_LOCAL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-        const API_BASE = IS_LOCAL ? 'http://localhost:8000' : 'https://api.controlflows.com';
+        const API_BASE = IS_LOCAL ? 'http://localhost:8000' : '';
         let sessionId = null, currentUser = null;
 
         // MSAL configuration (production only)
