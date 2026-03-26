@@ -604,12 +604,15 @@
                     if (resp.ok) {
                         const data = await resp.json();
                         const sessions = data.sessions || [];
-                        html += sessions.map(s => `
-                            <div class="sidebar-item" onclick="viewSession('${s.session_id}')">
+                        html += sessions.map(s => {
+                            const isViewing = viewingHistory && viewingSessionId === s.session_id;
+                            const style = isViewing ? 'background: var(--bg-tertiary); border-left: 3px solid var(--brand);' : '';
+                            return `
+                            <div class="sidebar-item" style="${style}" onclick="viewSession('${s.session_id}')">
                                 <div class="sidebar-item-title">${escapeHtml(s.title || 'New conversation')}</div>
                                 <div class="sidebar-item-time">${formatTime(s.start_time)}</div>
-                            </div>
-                        `).join('');
+                            </div>`;
+                        }).join('');
                     }
                 } catch (e) { /* silently fail */ }
             }
@@ -618,6 +621,7 @@
         }
 
         let viewingHistory = false;
+        let viewingSessionId = null;
 
         function _disableInputBar() {
             const chatInput = document.getElementById('chatInput');
@@ -633,6 +637,7 @@
 
         async function viewSession(sid) {
             closeSidebar();
+            viewingSessionId = sid;
             try {
                 const resp = await fetch(`${API_BASE}/sessions/${sid}/messages`);
                 if (!resp.ok) return;
@@ -652,6 +657,7 @@
 
             // Always re-render from tracked messages and restore input
             viewingHistory = false;
+            viewingSessionId = null;
             const messagesEl = document.getElementById('messages');
             messagesEl.innerHTML = '';
             currentSessionMessages.forEach(m => addMessage(m.role, m.content, null, true));
